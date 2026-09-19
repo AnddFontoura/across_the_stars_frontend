@@ -1,0 +1,16 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ats_frontend
+    ports:
+      - "8202:8202"
+    environment:
+      # URL of the backend API as seen from the browser (host machine).
+      VITE_API_URL: "http://localhost:8201/api"
+    volumes:
+      - ./:/app
+      # Keep container's node_modules (don't let host overwrite it).
+      - /app/node_modules
+    command: sh -c "npm install && npm run dev"
