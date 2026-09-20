@@ -22,7 +22,7 @@ const props = defineProps({
   unitPx: { type: Number, default: 0.7 },
 })
 
-const emit = defineEmits(['place', 'select'])
+const emit = defineEmits(['place', 'select', 'hover', 'hoverend', 'groundclick'])
 
 // Isometric transform: a tile (gx, gy) in generic units maps to screen (sx, sy).
 // Classic 2:1 isometric projection.
@@ -42,8 +42,10 @@ const corners = computed(() => {
   return c
 })
 
-// Bounding box so we can size + offset the SVG viewport.
-const bounds = computed(() => {
+// Natural bounding box of the whole terrain (fully zoomed out, no panning).
+// This is the diamond plus some padding; it's what we frame the map to by
+// default and the reference we clamp panning against.
+const baseBounds = computed(() => {
   const xs = corners.value.map((p) => p.x)
   const ys = corners.value.map((p) => p.y)
   const pad = 40
@@ -54,6 +56,48 @@ const bounds = computed(() => {
   const maxY = Math.max(...ys) + pad
   return { minX, minY, w: maxX - minX, h: maxY - minY }
 })
+
+// --- Zoom & pan state ---
+// zoom is a multiplier on top of the base framing: 1 = fit the whole map,
+// >1 = zoomed in (smaller viewBox), <1 = zoomed out.
+const MIN_ZOOM = 0.6
+const MAX_ZOOM = 4
+const ZOOM_STEP = 1.2 // multiplicative step per wheel notch / button press
+
+const zoom = ref(1)
+// Center of the viewport in world coordinates. Starts at the map center.
+const center = ref(null)
+
+function defaultCenter() {
+  const b = baseBounds.value
+  return { x: b.minX + b.w / 2, y: b.minY + b.h / 2 }
+}
+
+// The visible viewBox derived from zoom + center, clamped so we never scroll
+// too far away from the terrain.
+const bounds = computed(() => {
+  const b = baseBounds.value
+  const w = b.w / zoom.value
+  const h = b.h / zoom.value
+  const c = center.value || defaultCenter()
+
+  // Allow panning up to half the base size beyond each edge so the map can be
+  // recentered comfortably without flying off into empty space.
+  const slack = 0.5
+  const minCx = b.minX - b.w * slack + w / 2
+  const maxCx = b.minX + b.w + b.w * slack - w / 2
+  const minCy = b.minY - b.h * slack + h / 2
+  const maxCy = b.minY + b.h + b.h * slack - h / 2
+
+  const cx = clamp(c.x, Math.min(minCx, maxCx), Math.max(minCx, maxCx))
+  const cy = clamp(c.y, Math.min(minCy, maxCy), Math.max(minCy, maxCy))
+
+  return { minX: cx - w / 2, minY: cy - h / 2, w, h }
+})
+
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v))
+}
 
 const groundPoints = computed(() =>
   corners.value.map((p) => `${p.x},${p.y}`).join(' ')
@@ -105,26 +149,123 @@ const hover = ref(null) // { gx, gy } snapped generic coords
 
 const svgRef = ref(null)
 
-// Convert a screen point (within the SVG) back to generic grid coords.
-function screenToGrid(clientX, clientY) {
+// Convert a screen point (within the SVG) to world (viewBox) coordinates.
+// preserveAspectRatio="xMidYMid meet" letterboxes the viewBox inside the
+// element, so we must account for the meet scale and the centering offset.
+function screenToWorld(clientX, clientY) {
   const svg = svgRef.value
   if (!svg) return null
   const rect = svg.getBoundingClientRect()
-  // account for viewBox scaling
-  const scaleX = bounds.value.w / rect.width
-  const scaleY = bounds.value.h / rect.height
-  const px = bounds.value.minX + (clientX - rect.left) * scaleX
-  const py = bounds.value.minY + (clientY - rect.top) * scaleY
+  const b = bounds.value
+  // "meet" uses the smaller scale so the whole viewBox fits.
+  const scale = Math.min(rect.width / b.w, rect.height / b.h)
+  // Centering offset introduced by xMidYMid.
+  const offX = (rect.width - b.w * scale) / 2
+  const offY = (rect.height - b.h * scale) / 2
+  const px = b.minX + (clientX - rect.left - offX) / scale
+  const py = b.minY + (clientY - rect.top - offY) / scale
+  return { px, py }
+}
 
+// Convert a screen point (within the SVG) back to generic grid coords.
+function screenToGrid(clientX, clientY) {
+  const w = screenToWorld(clientX, clientY)
+  if (!w) return null
   // invert iso: px = (gx-gy)*TILE_W ; py = (gx+gy)*TILE_H
-  const a = px / TILE_W.value // gx - gy
-  const b = py / TILE_H.value // gx + gy
+  const a = w.px / TILE_W.value // gx - gy
+  const b = w.py / TILE_H.value // gx + gy
   let gx = (a + b) / 2
   let gy = (b - a) / 2
   return { gx, gy }
 }
 
+// --- Zoom & pan interaction ---
+function setZoom(nextZoom, anchor) {
+  const z = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM)
+  if (z === zoom.value) return
+
+  // Keep the world point under `anchor` (screen coords) fixed while zooming.
+  // If no anchor, zoom around the current center.
+  const world = anchor ? screenToWorld(anchor.x, anchor.y) : null
+  const before = world ? { x: world.px, y: world.py } : null
+
+  const c = center.value || defaultCenter()
+  if (before) {
+    // new_center = anchorWorld - (anchorWorld - oldCenter) * (oldZoom / newZoom)
+    const k = zoom.value / z
+    center.value = {
+      x: before.x - (before.x - c.x) * k,
+      y: before.y - (before.y - c.y) * k,
+    }
+  } else if (!center.value) {
+    center.value = c
+  }
+  zoom.value = z
+}
+
+function zoomIn() {
+  setZoom(zoom.value * ZOOM_STEP, null)
+}
+
+function zoomOut() {
+  setZoom(zoom.value / ZOOM_STEP, null)
+}
+
+function resetView() {
+  zoom.value = 1
+  center.value = defaultCenter()
+}
+
+function onWheel(e) {
+  e.preventDefault()
+  const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP
+  setZoom(zoom.value * factor, { x: e.clientX, y: e.clientY })
+}
+
+// Dragging with the mouse pans the view (only when not placing a structure).
+const panning = ref(false)
+let panStart = null // { world: {px,py}, clientX, clientY }
+
+function onMouseDown(e) {
+  if (props.selectedType) return // placement mode uses clicks, not drag
+  const w = screenToWorld(e.clientX, e.clientY)
+  if (!w) return
+  panStart = { clientX: e.clientX, clientY: e.clientY, center: center.value || defaultCenter() }
+  panning.value = false // becomes true once the pointer actually moves
+}
+
+function onPanMove(e) {
+  if (!panStart) return
+  const svg = svgRef.value
+  if (!svg) return
+  const rect = svg.getBoundingClientRect()
+  const b = bounds.value
+  const scale = Math.min(rect.width / b.w, rect.height / b.h)
+  const dxWorld = (e.clientX - panStart.clientX) / scale
+  const dyWorld = (e.clientY - panStart.clientY) / scale
+  // small threshold so a click isn't treated as a drag
+  if (!panning.value && Math.hypot(dxWorld, dyWorld) * scale < 4) return
+  panning.value = true
+  center.value = {
+    x: panStart.center.x - dxWorld,
+    y: panStart.center.y - dyWorld,
+  }
+}
+
+function endPan() {
+  panStart = null
+  // Defer clearing so the click handler can see we were panning and skip.
+  requestAnimationFrame(() => {
+    panning.value = false
+  })
+}
+
 function onMove(e) {
+  // Panning takes over while dragging on the map (not in placement mode).
+  if (panStart) {
+    onPanMove(e)
+    return
+  }
   if (!props.selectedType) {
     hover.value = null
     return
@@ -143,18 +284,45 @@ function onMove(e) {
 
 function onLeave() {
   hover.value = null
+  // If the pointer leaves the map mid-drag, finish the pan gracefully.
+  if (panStart) endPan()
 }
 
-function onGroundClick() {
-  // Ground clicks only matter when placing a structure.
-  if (!props.selectedType || !hover.value) return
-  emit('place', { x: hover.value.gx, y: hover.value.gy })
+// Click handler on the whole SVG. While placing, a click anywhere
+// (even over the ghost preview or another structure) drops the structure at
+// the previewed, in-bounds position. This prevents large structures like the
+// Command Center from being impossible to place because the ghost/other
+// structures sat under the cursor.
+function onSvgClick() {
+  // A click that was really a pan drag shouldn't place or deselect.
+  if (panning.value) return
+  if (props.selectedType) {
+    if (hover.value) emit('place', { x: hover.value.gx, y: hover.value.gy })
+    return
+  }
+  // Not placing: a click that reaches the SVG (empty ground) clears selection.
+  emit('groundclick')
 }
 
-function onStructureClick(structure) {
-  // When not placing, clicking a structure selects it (for upgrade/details).
+function onStructureClick(structure, e) {
+  // While placing, let the click bubble to the SVG so the new structure is
+  // dropped even if the cursor is over an existing structure.
   if (props.selectedType) return
+  // A pan drag that ends over a structure shouldn't select it.
+  if (panning.value) return
+  // When not placing, clicking a structure selects it (for upgrade/details).
+  e?.stopPropagation()
   emit('select', structure.id)
+}
+
+function onStructureHover(structure, e) {
+  // Don't show the collect tooltip while in placement mode.
+  if (props.selectedType) return
+  emit('hover', { id: structure.id, x: e.clientX, y: e.clientY })
+}
+
+function onStructureLeave() {
+  emit('hoverend')
 }
 
 // --- Build/upgrade state helpers ---
@@ -189,17 +357,22 @@ const preview = computed(() => {
 </script>
 
 <template>
+  <div class="grid-wrap">
   <svg
     ref="svgRef"
     class="grid-svg"
-    :class="{ placing: !!selectedType }"
+    :class="{ placing: !!selectedType, panning: panning }"
     :viewBox="`${bounds.minX} ${bounds.minY} ${bounds.w} ${bounds.h}`"
     preserveAspectRatio="xMidYMid meet"
     @mousemove="onMove"
     @mouseleave="onLeave"
+    @mousedown="onMouseDown"
+    @mouseup="endPan"
+    @click="onSvgClick"
+    @wheel="onWheel"
   >
     <!-- ground (grass) -->
-    <polygon :points="groundPoints" fill="#3c8a3c" stroke="#2b6b2b" stroke-width="2" @click="onGroundClick" />
+    <polygon :points="groundPoints" fill="#3c8a3c" stroke="#2b6b2b" stroke-width="2" />
     <polygon :points="groundPoints" fill="url(#grassShade)" opacity="0.35" style="pointer-events:none" />
 
     <defs>
@@ -215,7 +388,9 @@ const preview = computed(() => {
       :key="s.id"
       class="structure"
       :class="{ selectable: !selectedType, selected: s.id === selectedStructureId, busy: isBusy(s) }"
-      @click.stop="onStructureClick(s)"
+      @click="onStructureClick(s, $event)"
+      @mousemove="onStructureHover(s, $event)"
+      @mouseleave="onStructureLeave"
     >
       <polygon :points="structurePolys(s).left" :fill="shade(s.type.color, 0.35)" />
       <polygon :points="structurePolys(s).right" :fill="shade(s.type.color, 0.2)" />
@@ -235,24 +410,74 @@ const preview = computed(() => {
       >{{ isBusy(s) ? busyLabel(s) : 'Nv ' + s.level }}</text>
     </g>
 
-    <!-- placement preview -->
-    <g v-if="preview" opacity="0.6">
+    <!-- placement preview (never intercepts pointer events, so the click
+         always reaches the ground and places the structure) -->
+    <g v-if="preview" opacity="0.6" style="pointer-events: none">
       <polygon :points="preview.left" :fill="shade(preview.color, 0.35)" />
       <polygon :points="preview.right" :fill="shade(preview.color, 0.2)" />
       <polygon :points="preview.top" :fill="preview.color" stroke="#ffffff" stroke-width="1.5" />
     </g>
   </svg>
+
+    <!-- Zoom controls -->
+    <div class="zoom-controls">
+      <button class="zoom-btn" title="Aproximar" @click="zoomIn">+</button>
+      <button class="zoom-btn zoom-reset" title="Reenquadrar mapa" @click="resetView">⤢</button>
+      <button class="zoom-btn" title="Afastar" @click="zoomOut">−</button>
+    </div>
+  </div>
 </template>
 
 <style scoped>
+.grid-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
 .grid-svg {
   width: 100%;
   height: 100%;
   display: block;
   user-select: none;
+  cursor: grab;
+  touch-action: none;
 }
 .grid-svg.placing {
   cursor: crosshair;
+}
+.grid-svg.panning {
+  cursor: grabbing;
+}
+.zoom-controls {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 20;
+}
+.zoom-btn {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  border: 1px solid rgba(120, 160, 220, 0.3);
+  background: rgba(16, 24, 42, 0.9);
+  color: #cfe0ff;
+  font-size: 1.1rem;
+  font-weight: 700;
+  cursor: pointer;
+  line-height: 1;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+.zoom-btn:hover {
+  border-color: #4fc3f7;
+  color: #4fc3f7;
+}
+.zoom-reset {
+  font-size: 0.95rem;
 }
 .structure.selectable {
   cursor: pointer;

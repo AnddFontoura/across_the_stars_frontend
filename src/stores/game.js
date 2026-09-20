@@ -30,6 +30,55 @@ export const useGameStore = defineStore('game', {
       }
     },
 
+    /**
+     * Silent refresh: fetches the latest state and merges it into the current
+     * one without toggling the loading flag or recreating the structures array.
+     * This avoids any visible "flash" or reset of hover/selection in the UI.
+     */
+    async refreshBase() {
+      try {
+        const { data } = await api.get('/base')
+        this.mergeSnapshot(data)
+        return true
+      } catch (e) {
+        // Stay silent on background refresh errors; keep showing current data.
+        return false
+      }
+    },
+
+    mergeSnapshot(data) {
+      // Base scalar fields: assign in place.
+      if (this.base) {
+        Object.assign(this.base, data.base)
+      } else {
+        this.base = data.base
+      }
+
+      // Catalog rarely changes; replace directly.
+      this.structureTypes = data.structure_types
+
+      // Structures: update existing entries in place, add new, remove gone.
+      const incoming = data.structures
+      const incomingById = new Map(incoming.map((s) => [s.id, s]))
+
+      // Update or remove current entries.
+      for (let i = this.structures.length - 1; i >= 0; i--) {
+        const current = this.structures[i]
+        const fresh = incomingById.get(current.id)
+        if (fresh) {
+          Object.assign(current, fresh)
+          incomingById.delete(current.id)
+        } else {
+          this.structures.splice(i, 1)
+        }
+      }
+
+      // Append any brand-new structures.
+      for (const fresh of incomingById.values()) {
+        this.structures.push(fresh)
+      }
+    },
+
     async placeStructure(structureTypeId, x, y) {
       this.error = null
       try {
@@ -41,8 +90,13 @@ export const useGameStore = defineStore('game', {
         this.applySnapshot(data)
         return true
       } catch (e) {
+        const errors = e?.response?.data?.errors
         this.error =
-          e?.response?.data?.errors?.position?.[0] ||
+          errors?.position?.[0] ||
+          errors?.unique?.[0] ||
+          errors?.category?.[0] ||
+          errors?.builds?.[0] ||
+          errors?.limit?.[0] ||
           e?.response?.data?.message ||
           'Não foi possível posicionar a estrutura.'
         return false
@@ -59,6 +113,30 @@ export const useGameStore = defineStore('game', {
       }
     },
 
+    async collectStructure(structureId) {
+      this.error = null
+      try {
+        const { data } = await api.post(`/structures/${structureId}/collect`)
+        this.applySnapshot(data)
+        return true
+      } catch (e) {
+        this.error = e?.response?.data?.message || 'Falha ao recolher recursos.'
+        return false
+      }
+    },
+
+    async demolishStructure(structureId) {
+      this.error = null
+      try {
+        const { data } = await api.delete(`/structures/${structureId}`)
+        this.applySnapshot(data)
+        return true
+      } catch (e) {
+        this.error = e?.response?.data?.message || 'Não foi possível desconstruir.'
+        return false
+      }
+    },
+
     async upgradeStructure(structureId) {
       this.error = null
       try {
@@ -69,6 +147,9 @@ export const useGameStore = defineStore('game', {
         const errors = e?.response?.data?.errors
         this.error =
           errors?.cost?.[0] ||
+          errors?.command?.[0] ||
+          errors?.busy?.[0] ||
+          errors?.builds?.[0] ||
           errors?.level?.[0] ||
           e?.response?.data?.message ||
           'Não foi possível evoluir a estrutura.'

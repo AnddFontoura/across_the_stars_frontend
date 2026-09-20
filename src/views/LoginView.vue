@@ -11,6 +11,7 @@ const name = ref('')
 const email = ref('')
 const password = ref('')
 const passwordConfirmation = ref('')
+const showPassword = ref(false)
 const error = ref(null)
 const loading = ref(false)
 
@@ -55,8 +56,8 @@ async function submit() {
 
       <form @submit.prevent="submit" class="form">
         <label v-if="mode === 'register'">
-          <span>Nome</span>
-          <input v-model="name" type="text" required placeholder="Seu nome" />
+          <span>Nome de usuário</span>
+          <input v-model="name" type="text" required placeholder="Seu nome de usuário" />
         </label>
 
         <label>
@@ -66,12 +67,32 @@ async function submit() {
 
         <label>
           <span>Senha</span>
-          <input v-model="password" type="password" required placeholder="••••••••" />
+          <div class="password-field">
+            <input
+              v-model="password"
+              :type="showPassword ? 'text' : 'password'"
+              required
+              placeholder="••••••••"
+            />
+            <button
+              type="button"
+              class="toggle-password"
+              @click="showPassword = !showPassword"
+              :aria-label="showPassword ? 'Ocultar senha' : 'Mostrar senha'"
+            >
+              {{ showPassword ? 'Ocultar' : 'Mostrar' }}
+            </button>
+          </div>
         </label>
 
         <label v-if="mode === 'register'">
           <span>Confirmar senha</span>
-          <input v-model="passwordConfirmation" type="password" required placeholder="••••••••" />
+          <input
+            v-model="passwordConfirmation"
+            :type="showPassword ? 'text' : 'password'"
+            required
+            placeholder="••••••••"
+          />
         </label>
 
         <p v-if="error" class="error">{{ error }}</p>
@@ -136,6 +157,30 @@ input {
 }
 input:focus {
   border-color: #4fc3f7;
+}
+.password-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.password-field input {
+  width: 100%;
+  padding-right: 5rem;
+}
+.toggle-password {
+  position: absolute;
+  right: 0.4rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: #7fb2ff;
+  font-size: 0.78rem;
+  cursor: pointer;
+  padding: 0.25rem 0.4rem;
+}
+.toggle-password:hover {
+  color: #aecbff;
 }
 .btn {
   margin-top: 0.4rem;
