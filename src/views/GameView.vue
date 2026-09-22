@@ -312,13 +312,43 @@ const resourceMeta = {
   metal: { label: 'Metal', color: '#9aa5b1' },
   energy: { label: 'Energia', color: '#4fc3f7' },
 }
+
+// --- Base switching (terrestrial <-> planetary) ---
+const isPlanetary = computed(() => game.base?.kind === 'planetary')
+
+// Defense Center level considered for the quantity rules (capped at 15).
+const quantityCommandLevel = computed(() => game.base?.quantity_command_level || 0)
+
+// Label of the active base's command structure, used in the top bar.
+const commandLabel = computed(() => (isPlanetary.value ? 'Centro de Defesa' : 'Centro'))
+
+async function toggleBase() {
+  // Switching bases clears any in-flight placement/selection.
+  selectedType.value = null
+  selectedStructureId.value = null
+  confirmingDemolish.value = false
+  const target = isPlanetary.value ? 'terrestrial' : 'planetary'
+  await game.setBaseKind(target)
+  showFlash(target === 'planetary' ? 'Base planetária' : 'Base terrestre')
+}
+
+// Whether the currently selected structure is a defense structure (has combat
+// stats to show in the detail panel).
+const selectedIsDefense = computed(
+  () => selectedStructure.value?.type?.category === 'defense'
+)
 </script>
 
 <template>
   <div class="game">
     <!-- Top bar -->
     <header class="topbar">
-      <div class="brand">Across the Stars</div>
+      <div class="brand">
+        Across the Stars
+        <span class="base-badge" :class="{ planetary: isPlanetary }">
+          {{ isPlanetary ? '🛰️ Base planetária' : '🌍 Base terrestre' }}
+        </span>
+      </div>
 
       <div class="resources">
         <div v-for="(meta, key) in resourceMeta" :key="key" class="res">
@@ -334,8 +364,8 @@ const resourceMeta = {
           <span class="res-label">Construções</span>
           <span class="res-value">{{ structuresUsed }} / {{ maxStructures }}</span>
         </div>
-        <div class="res" title="Nível do Centro de Operações (teto das demais)">
-          <span class="res-label">Centro</span>
+        <div class="res" title="Nível do centro de comando (teto das demais estruturas)">
+          <span class="res-label">{{ commandLabel }}</span>
           <span class="res-value">{{ commandLevel > 0 ? 'Nv ' + commandLevel : '—' }}</span>
         </div>
       </div>
@@ -389,7 +419,7 @@ const resourceMeta = {
             <strong>{{ selectedStructure.level }} / {{ selectedStructure.max_level }}</strong>
           </div>
 
-          <!-- Producer stats -->
+          <!-- Producer stats (terrestrial) -->
           <template v-if="selectedStructure.type.category === 'producer'">
             <div class="detail-row">
               <span>Produção/min</span>
@@ -405,11 +435,23 @@ const resourceMeta = {
             </div>
           </template>
 
-          <!-- Storage stats -->
-          <template v-else>
+          <!-- Storage stats (terrestrial) -->
+          <template v-else-if="selectedStructure.type.category === 'storage'">
             <div class="detail-row">
               <span>Protege por recurso</span>
               <strong>{{ selectedStructure.protection }}</strong>
+            </div>
+          </template>
+
+          <!-- Planetary structures: hit points (and damage for defenses). -->
+          <template v-if="isPlanetary && selectedStructure.max_hp > 0">
+            <div class="detail-row">
+              <span>Pontos de vida</span>
+              <strong>{{ selectedStructure.current_hp }} / {{ selectedStructure.max_hp }}</strong>
+            </div>
+            <div v-if="selectedStructure.damage > 0" class="detail-row">
+              <span>Dano</span>
+              <strong>{{ selectedStructure.damage }}</strong>
             </div>
           </template>
 
@@ -428,11 +470,12 @@ const resourceMeta = {
 
           <div v-else-if="selectedStructure.capped_by_command" class="capped-note">
             <template v-if="commandLevel <= 0">
-              Construa um Centro de Operações para evoluir esta estrutura.
+              Construa um {{ isPlanetary ? 'Centro de Defesa Planetária' : 'Centro de Operações' }}
+              para evoluir esta estrutura.
             </template>
             <template v-else>
-              Nível limitado pelo Centro de Operações (nível {{ commandLevel }}).
-              Evolua o Centro primeiro.
+              Nível limitado pelo {{ isPlanetary ? 'Centro de Defesa' : 'Centro de Operações' }}
+              (nível {{ commandLevel }}). Evolua o Centro primeiro.
             </template>
           </div>
 
@@ -503,7 +546,7 @@ const resourceMeta = {
       </aside>
 
       <!-- Terrain -->
-      <main class="stage">
+      <main class="stage" :class="{ 'stage-planetary': isPlanetary }">
         <div v-if="game.loading" class="loading">Carregando terreno...</div>
         <IsometricGrid
           v-else-if="game.base"
@@ -513,11 +556,13 @@ const resourceMeta = {
           :selected-type="selectedType"
           :selected-structure-id="selectedStructureId"
           :now-ts="nowTs"
+          :planetary="isPlanetary"
           @place="onPlace"
           @select="onSelectStructure"
           @groundclick="onGroundClick"
           @hover="onGridHover"
           @hoverend="onGridHoverEnd"
+          @toggle-base="toggleBase"
         />
         <!-- Hover tooltip: accumulated resources + collect button -->
         <div
@@ -620,6 +665,24 @@ const resourceMeta = {
   font-weight: 800;
   letter-spacing: 0.5px;
   color: #cfe0ff;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+.base-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(92, 184, 92, 0.5);
+  background: rgba(60, 138, 60, 0.18);
+  color: #bfe6bf;
+}
+.base-badge.planetary {
+  border-color: rgba(125, 208, 255, 0.55);
+  background: rgba(61, 139, 255, 0.18);
+  color: #cfe6ff;
 }
 .resources {
   display: flex;
@@ -990,6 +1053,14 @@ const resourceMeta = {
   background:
     radial-gradient(circle at 50% 40%, #16233b, #0a0e17 75%);
   overflow: hidden;
+  transition: background 0.4s ease;
+}
+/* Deeper, bluer "outer space" backdrop for the orbital defense base. */
+.stage-planetary {
+  background:
+    radial-gradient(circle at 50% 40%, rgba(61, 139, 255, 0.22), transparent 60%),
+    radial-gradient(circle at 50% 38%, #122246, #050a1a 78%);
+  background-color: #050a1a;
 }
 .loading {
   color: #93a6c6;

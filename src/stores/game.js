@@ -3,25 +3,44 @@ import api from '../api'
 
 export const useGameStore = defineStore('game', {
   state: () => ({
-    base: null,            // { id, width, height, resources: {gold, metal, energy} }
+    base: null,            // { id, kind, scope, width, height, resources: {gold, metal, energy} }
     structures: [],        // placed structures
     structureTypes: [],    // catalog
+    // Which base is currently active: 'terrestrial' (resources) or
+    // 'planetary' (orbital defense). Drives which base the API operates on.
+    activeBaseKind: 'terrestrial',
     loading: false,
     error: null,
   }),
+
+  getters: {
+    isPlanetary: (state) => state.activeBaseKind === 'planetary',
+  },
 
   actions: {
     applySnapshot(data) {
       this.base = data.base
       this.structures = data.structures
       this.structureTypes = data.structure_types
+      // Keep the active kind in sync with what the server returned.
+      if (data.base?.kind) this.activeBaseKind = data.base.kind
+    },
+
+    /**
+     * Switch between the terrestrial and planetary bases and reload the state.
+     */
+    async setBaseKind(kind) {
+      if (kind !== 'terrestrial' && kind !== 'planetary') return
+      if (kind === this.activeBaseKind && this.base) return
+      this.activeBaseKind = kind
+      await this.loadBase()
     },
 
     async loadBase() {
       this.loading = true
       this.error = null
       try {
-        const { data } = await api.get('/base')
+        const { data } = await api.get('/base', { params: { kind: this.activeBaseKind } })
         this.applySnapshot(data)
       } catch (e) {
         this.error = e?.response?.data?.message || 'Falha ao carregar a base.'
@@ -37,7 +56,7 @@ export const useGameStore = defineStore('game', {
      */
     async refreshBase() {
       try {
-        const { data } = await api.get('/base')
+        const { data } = await api.get('/base', { params: { kind: this.activeBaseKind } })
         this.mergeSnapshot(data)
         return true
       } catch (e) {
@@ -86,6 +105,7 @@ export const useGameStore = defineStore('game', {
           structure_type_id: structureTypeId,
           x,
           y,
+          kind: this.activeBaseKind,
         })
         this.applySnapshot(data)
         return true
@@ -94,6 +114,7 @@ export const useGameStore = defineStore('game', {
         this.error =
           errors?.position?.[0] ||
           errors?.unique?.[0] ||
+          errors?.scope?.[0] ||
           errors?.category?.[0] ||
           errors?.builds?.[0] ||
           errors?.limit?.[0] ||
@@ -106,7 +127,7 @@ export const useGameStore = defineStore('game', {
     async collectAll() {
       this.error = null
       try {
-        const { data } = await api.post('/structures/collect')
+        const { data } = await api.post('/structures/collect', { kind: this.activeBaseKind })
         this.applySnapshot(data)
       } catch (e) {
         this.error = e?.response?.data?.message || 'Falha ao coletar recursos.'

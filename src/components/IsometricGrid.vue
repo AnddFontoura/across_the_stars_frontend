@@ -20,9 +20,12 @@ const props = defineProps({
   nowTs: { type: Number, default: () => Date.now() },
   // Size of one generic unit in screen pixels (zoom).
   unitPx: { type: Number, default: 0.7 },
+  // When true, render the orbital defense base (blue, in space) instead of
+  // the terrestrial (green grass) base.
+  planetary: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['place', 'select', 'hover', 'hoverend', 'groundclick'])
+const emit = defineEmits(['place', 'select', 'hover', 'hoverend', 'groundclick', 'toggle-base'])
 
 // Isometric transform: a tile (gx, gy) in generic units maps to screen (sx, sy).
 // Classic 2:1 isometric projection.
@@ -371,16 +374,41 @@ const preview = computed(() => {
     @click="onSvgClick"
     @wheel="onWheel"
   >
-    <!-- ground (grass) -->
-    <polygon :points="groundPoints" fill="#3c8a3c" stroke="#2b6b2b" stroke-width="2" />
-    <polygon :points="groundPoints" fill="url(#grassShade)" opacity="0.35" style="pointer-events:none" />
-
     <defs>
       <linearGradient id="grassShade" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stop-color="#5cb85c" />
         <stop offset="100%" stop-color="#2f6f2f" />
       </linearGradient>
+      <linearGradient id="orbitShade" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#6fb7ff" />
+        <stop offset="100%" stop-color="#123a8a" />
+      </linearGradient>
+      <!-- Soft glow used to suggest the platform floats in orbit. -->
+      <radialGradient id="orbitGlow" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="#7fd0ff" stop-opacity="0.55" />
+        <stop offset="60%" stop-color="#3d8bff" stop-opacity="0.18" />
+        <stop offset="100%" stop-color="#3d8bff" stop-opacity="0" />
+      </radialGradient>
     </defs>
+
+    <!-- ground: green grass (terrestrial) or a blue orbital platform (planetary) -->
+    <template v-if="!planetary">
+      <polygon :points="groundPoints" fill="#3c8a3c" stroke="#2b6b2b" stroke-width="2" />
+      <polygon :points="groundPoints" fill="url(#grassShade)" opacity="0.35" style="pointer-events:none" />
+    </template>
+    <template v-else>
+      <!-- Halo glow behind the platform to sell the "in space" feel. -->
+      <ellipse
+        :cx="(bounds.minX + bounds.w / 2)"
+        :cy="(bounds.minY + bounds.h / 2)"
+        :rx="bounds.w * 0.62"
+        :ry="bounds.h * 0.62"
+        fill="url(#orbitGlow)"
+        style="pointer-events:none"
+      />
+      <polygon :points="groundPoints" fill="#1b3f86" stroke="#7fd0ff" stroke-width="2.5" />
+      <polygon :points="groundPoints" fill="url(#orbitShade)" opacity="0.45" style="pointer-events:none" />
+    </template>
 
     <!-- placed structures -->
     <g
@@ -425,6 +453,19 @@ const preview = computed(() => {
       <button class="zoom-btn zoom-reset" title="Reenquadrar mapa" @click="resetView">⤢</button>
       <button class="zoom-btn" title="Afastar" @click="zoomOut">−</button>
     </div>
+
+    <!-- Base switch: toggles between the terrestrial and planetary bases. -->
+    <button
+      class="base-toggle"
+      :class="{ planetary: planetary }"
+      :title="planetary ? 'Ir para a base terrestre' : 'Ir para a base planetária'"
+      @click="emit('toggle-base')"
+    >
+      <span class="base-toggle-icon">{{ planetary ? '🌍' : '🛰️' }}</span>
+      <span class="base-toggle-label">
+        {{ planetary ? 'Base terrestre' : 'Base planetária' }}
+      </span>
+    </button>
   </div>
 </template>
 
@@ -478,6 +519,40 @@ const preview = computed(() => {
 }
 .zoom-reset {
   font-size: 0.95rem;
+}
+.base-toggle {
+  position: absolute;
+  right: 14px;
+  bottom: 128px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(120, 160, 220, 0.35);
+  background: rgba(16, 24, 42, 0.92);
+  color: #cfe0ff;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  z-index: 20;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  transition: border-color 0.15s, color 0.15s, box-shadow 0.15s;
+}
+.base-toggle:hover {
+  border-color: #4fc3f7;
+  color: #eaf4ff;
+}
+.base-toggle.planetary {
+  border-color: rgba(125, 208, 255, 0.6);
+  box-shadow: 0 0 18px rgba(61, 139, 255, 0.5);
+}
+.base-toggle-icon {
+  font-size: 1.15rem;
+  line-height: 1;
+}
+.base-toggle-label {
+  white-space: nowrap;
 }
 .structure.selectable {
   cursor: pointer;
