@@ -4,6 +4,8 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useGameStore } from '../stores/game'
 import IsometricGrid from '../components/IsometricGrid.vue'
+import HangarPanel from '../components/HangarPanel.vue'
+import ShipBuilder from '../components/ShipBuilder.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -218,14 +220,40 @@ const selectedStructure = computed(() =>
   game.structures.find((s) => s.id === selectedStructureId.value) || null
 )
 
+// Aircraft Hangar management modal (opens from the detail panel).
+const showHangar = ref(false)
+
+function openHangar() {
+  showHangar.value = true
+}
+
+function closeHangar() {
+  showHangar.value = false
+}
+
+// Ship builder modal (custom models from modules).
+const showBuilder = ref(false)
+
+function openBuilder() {
+  showBuilder.value = true
+}
+
+function closeBuilder() {
+  showBuilder.value = false
+}
+
 function onSelectStructure(id) {
   selectedStructureId.value = id
   confirmingDemolish.value = false
+  // Selecting a different structure closes any open hangar modal.
+  showHangar.value = false
 }
 
 function deselect() {
   selectedStructureId.value = null
   confirmingDemolish.value = false
+  showHangar.value = false
+  showBuilder.value = false
 }
 
 // Clicking empty ground clears the selection (when not placing).
@@ -290,6 +318,12 @@ async function onPlace({ x, y }) {
   }
 }
 
+// Drag-to-move: the grid emits the structure id and its new snapped position.
+async function onMoveStructure({ id, x, y }) {
+  const ok = await game.moveStructure(id, x, y)
+  showFlash(ok ? 'Estrutura movida!' : game.error || 'Não foi possível mover.')
+}
+
 async function collect() {
   await game.collectAll()
   showFlash('Recursos coletados!')
@@ -327,6 +361,7 @@ async function toggleBase() {
   selectedType.value = null
   selectedStructureId.value = null
   confirmingDemolish.value = false
+  showHangar.value = false
   const target = isPlanetary.value ? 'terrestrial' : 'planetary'
   await game.setBaseKind(target)
   showFlash(target === 'planetary' ? 'Base planetária' : 'Base terrestre')
@@ -443,6 +478,26 @@ const selectedIsDefense = computed(
             </div>
           </template>
 
+          <!-- Support stats (e.g. Aircraft Hangar) -->
+          <template v-else-if="selectedStructure.type.category === 'support'">
+            <div class="detail-row">
+              <span>Redução tempo de aeronave</span>
+              <strong>{{ selectedStructure.build_time_reduction }}%</strong>
+            </div>
+            <button
+              v-if="selectedStructure.is_constructed"
+              class="upgrade"
+              style="background: linear-gradient(135deg,#8e7cc3,#5a4b9c); color:#fff;"
+              @click="openHangar"
+            >Gerenciar hangar</button>
+            <button
+              v-if="selectedStructure.is_constructed"
+              class="upgrade"
+              style="background: linear-gradient(135deg,#4fc3f7,#2a7fd8); color:#04101f; margin-top:.5rem;"
+              @click="openBuilder"
+            >Montar modelo de nave</button>
+          </template>
+
           <!-- Planetary structures: hit points (and damage for defenses). -->
           <template v-if="isPlanetary && selectedStructure.max_hp > 0">
             <div class="detail-row">
@@ -452,6 +507,10 @@ const selectedIsDefense = computed(
             <div v-if="selectedStructure.damage > 0" class="detail-row">
               <span>Dano</span>
               <strong>{{ selectedStructure.damage }}</strong>
+            </div>
+            <div v-if="selectedStructure.range > 0" class="detail-row">
+              <span>Alcance</span>
+              <strong>{{ selectedStructure.range }} cél.</strong>
             </div>
           </template>
 
@@ -542,6 +601,7 @@ const selectedIsDefense = computed(
         <p v-else class="hint" style="margin-top: 1rem;">
           Clique numa estrutura para ver detalhes e evoluir.
           Passe o mouse para ver o acumulado e recolher.
+          Arraste uma estrutura para movê-la (não pode sobrepor outras).
         </p>
       </aside>
 
@@ -557,12 +617,14 @@ const selectedIsDefense = computed(
           :selected-structure-id="selectedStructureId"
           :now-ts="nowTs"
           :planetary="isPlanetary"
+          :cell-size="game.base.cell_size || 10"
           @place="onPlace"
           @select="onSelectStructure"
           @groundclick="onGroundClick"
           @hover="onGridHover"
           @hoverend="onGridHoverEnd"
           @toggle-base="toggleBase"
+          @move="onMoveStructure"
         />
         <!-- Hover tooltip: accumulated resources + collect button -->
         <div
@@ -642,6 +704,16 @@ const selectedIsDefense = computed(
         </p>
       </aside>
     </div>
+
+    <!-- Aircraft Hangar management modal -->
+    <HangarPanel
+      v-if="showHangar && selectedStructure"
+      :structure="selectedStructure"
+      @close="closeHangar"
+    />
+
+    <!-- Ship builder modal (custom models) -->
+    <ShipBuilder v-if="showBuilder" @close="closeBuilder" />
   </div>
 </template>
 

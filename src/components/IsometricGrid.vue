@@ -23,9 +23,19 @@ const props = defineProps({
   // When true, render the orbital defense base (blue, in space) instead of
   // the terrestrial (green grass) base.
   planetary: { type: Boolean, default: false },
+  // Size of one grid cell in generic units (1 cell = cellSize x cellSize).
+  cellSize: { type: Number, default: 10 },
 })
 
-const emit = defineEmits(['place', 'select', 'hover', 'hoverend', 'groundclick', 'toggle-base'])
+const emit = defineEmits([
+  'place',
+  'select',
+  'hover',
+  'hoverend',
+  'groundclick',
+  'toggle-base',
+  'move',
+])
 
 // Isometric transform: a tile (gx, gy) in generic units maps to screen (sx, sy).
 // Classic 2:1 isometric projection.
@@ -106,6 +116,38 @@ const groundPoints = computed(() =>
   corners.value.map((p) => `${p.x},${p.y}`).join(' ')
 )
 
+// Soft cell grid: two families of iso-projected lines, one per grid axis.
+// Each cell is `cellSize` x `cellSize` generic units (a 10x10 area = 1 cell).
+// Lines run edge-to-edge across the terrain diamond. We cap the number of
+// lines so very large maps don't produce thousands of segments.
+const MAX_GRID_LINES = 220
+const gridLines = computed(() => {
+  const step = props.cellSize
+  if (!step || step <= 0) return []
+
+  // If the map has too many cells for a given axis, thin the lines out by
+  // drawing every Nth line so the total stays readable and performant.
+  const cellsX = Math.ceil(props.width / step)
+  const cellsY = Math.ceil(props.height / step)
+  const strideX = Math.max(1, Math.ceil(cellsX / MAX_GRID_LINES))
+  const strideY = Math.max(1, Math.ceil(cellsY / MAX_GRID_LINES))
+
+  const lines = []
+  // Lines of constant gx (vary gy from 0..height).
+  for (let gx = 0; gx <= props.width + 0.001; gx += step * strideX) {
+    const a = iso(gx, 0)
+    const b = iso(gx, props.height)
+    lines.push(`${a.x},${a.y} ${b.x},${b.y}`)
+  }
+  // Lines of constant gy (vary gx from 0..width).
+  for (let gy = 0; gy <= props.height + 0.001; gy += step * strideY) {
+    const a = iso(0, gy)
+    const b = iso(props.width, gy)
+    lines.push(`${a.x},${a.y} ${b.x},${b.y}`)
+  }
+  return lines
+})
+
 // Height of the raised block for structures (visual only).
 const BLOCK_H = 14
 
@@ -136,6 +178,35 @@ function structurePolys(s) {
   const cy = (t1.y + t3.y) / 2 - BLOCK_H
 
   return { top, left, right, cx, cy }
+}
+
+/**
+ * Build an iso-projected polygon approximating the attack range of a defense
+ * structure. Range is given in cells; we convert to generic units, then sample
+ * a circle (in grid space) around the structure's footprint center and project
+ * each sample through iso(). A circle in grid space becomes a diamond-ish
+ * ellipse on screen, which reads naturally on the isometric map.
+ */
+function rangePolygon(s) {
+  const rangeCells = s.range ?? s.type?.range ?? 0
+  if (!rangeCells || rangeCells <= 0) return null
+
+  const cx = s.x + s.type.width / 2
+  const cy = s.y + s.type.height / 2
+  // Range radius in grid units. The footprint half-size is added so the ring
+  // starts from the edge of the structure rather than its center.
+  const radius = rangeCells * props.cellSize + Math.max(s.type.width, s.type.height) / 2
+
+  const pts = []
+  const SEGMENTS = 48
+  for (let i = 0; i < SEGMENTS; i++) {
+    const ang = (i / SEGMENTS) * Math.PI * 2
+    const gx = cx + Math.cos(ang) * radius
+    const gy = cy + Math.sin(ang) * radius
+    const p = iso(gx, gy)
+    pts.push(`${p.x},${p.y - BLOCK_H}`)
+  }
+  return pts.join(' ')
 }
 
 function shade(hex, amount) {
@@ -229,12 +300,86 @@ function onWheel(e) {
 const panning = ref(false)
 let panStart = null // { world: {px,py}, clientX, clientY }
 
+// --- Move (drag an existing structure) state ---
+// While dragging a structure, `moveDrag` holds the structure being moved and
+// the current snapped target position + whether that target is valid (in
+// bounds and not overlapping another structure).
+const moveDrag = ref(null) // { structure, gx, gy, valid, moved }
+let moveStart = null // { structure, clientX, clientY }
+
+// Rectangle overlap test mirroring the backend, excluding a given id.
+function overlapsOther(gx, gy, w, h, ignoreId) {
+  for (const s of props.structures) {
+    if (s.id === ignoreId) continue
+    const ex = s.x
+    const ey = s.y
+    const ew = s.type.width
+    const eh = s.type.height
+    const separated =
+      gx + w <= ex || ex + ew <= gx || gy + h <= ey || ey + eh <= gy
+    if (!separated) return true
+  }
+  return false
+}
+
 function onMouseDown(e) {
   if (props.selectedType) return // placement mode uses clicks, not drag
+  // If a structure move is starting, don't also start a pan.
+  if (moveStart || moveDrag.value) return
   const w = screenToWorld(e.clientX, e.clientY)
   if (!w) return
   panStart = { clientX: e.clientX, clientY: e.clientY, center: center.value || defaultCenter() }
   panning.value = false // becomes true once the pointer actually moves
+}
+
+// Mousedown directly on a structure: begin a potential move drag (only when
+// not in placement mode and the structure isn't under construction/upgrade).
+function onStructureMouseDown(structure, e) {
+  if (props.selectedType) return
+  if (isBusy(structure)) return
+  // Left button only.
+  if (e.button !== undefined && e.button !== 0) return
+  e.stopPropagation() // don't let the SVG start panning
+  moveStart = { structure, clientX: e.clientX, clientY: e.clientY }
+}
+
+// Track a structure move; snaps to the grid and validates against overlaps.
+function onMoveDrag(e) {
+  if (!moveStart) return
+  const dist = Math.hypot(e.clientX - moveStart.clientX, e.clientY - moveStart.clientY)
+  // Small threshold so a click isn't treated as a drag.
+  if (!moveDrag.value && dist < 5) return
+
+  const g = screenToGrid(e.clientX, e.clientY)
+  if (!g) return
+  const s = moveStart.structure
+  const tw = s.type.width
+  const th = s.type.height
+  // Center the footprint on the cursor, then snap and clamp to bounds.
+  let gx = Math.round(g.gx - tw / 2)
+  let gy = Math.round(g.gy - th / 2)
+  gx = Math.max(0, Math.min(gx, props.width - tw))
+  gy = Math.max(0, Math.min(gy, props.height - th))
+
+  const valid = !overlapsOther(gx, gy, tw, th, s.id)
+  moveDrag.value = { structure: s, gx, gy, valid, moved: true }
+}
+
+// Finish a structure move: emit the new position if valid, else cancel.
+function endMove() {
+  if (moveDrag.value && moveDrag.value.moved) {
+    const { structure, gx, gy, valid } = moveDrag.value
+    if (valid && (gx !== structure.x || gy !== structure.y)) {
+      emit('move', { id: structure.id, x: gx, y: gy })
+    }
+    // Suppress the click-to-select that follows a drag.
+    panning.value = true
+    requestAnimationFrame(() => {
+      panning.value = false
+    })
+  }
+  moveStart = null
+  moveDrag.value = null
 }
 
 function onPanMove(e) {
@@ -264,6 +409,11 @@ function endPan() {
 }
 
 function onMove(e) {
+  // Moving a structure takes priority over panning/placement.
+  if (moveStart) {
+    onMoveDrag(e)
+    return
+  }
   // Panning takes over while dragging on the map (not in placement mode).
   if (panStart) {
     onPanMove(e)
@@ -287,8 +437,18 @@ function onMove(e) {
 
 function onLeave() {
   hover.value = null
-  // If the pointer leaves the map mid-drag, finish the pan gracefully.
+  // If the pointer leaves the map mid-drag, finish gracefully.
+  if (moveStart || moveDrag.value) endMove()
   if (panStart) endPan()
+}
+
+// Combined mouseup: end a structure move first, otherwise end a pan.
+function onMouseUp() {
+  if (moveStart || moveDrag.value) {
+    endMove()
+    return
+  }
+  endPan()
 }
 
 // Click handler on the whole SVG. While placing, a click anywhere
@@ -357,6 +517,28 @@ const preview = computed(() => {
   }
   return { ...structurePolys(fake), color: props.selectedType.color }
 })
+
+// Ghost polygons for the structure currently being dragged to a new spot.
+// Colored green when the drop is valid, red when it would overlap.
+const movePreview = computed(() => {
+  const md = moveDrag.value
+  if (!md || !md.moved) return null
+  const fake = { x: md.gx, y: md.gy, type: md.structure.type }
+  const color = md.valid ? '#4caf50' : '#e05252'
+  return { ...structurePolys(fake), color, valid: md.valid }
+})
+
+// The structure whose range ring should be shown: the selected one (if it's a
+// defense), or the one being dragged.
+const rangeRing = computed(() => {
+  const s = moveDrag.value?.structure
+    ? { ...moveDrag.value.structure, x: moveDrag.value.gx, y: moveDrag.value.gy }
+    : props.structures.find((s) => s.id === props.selectedStructureId)
+  if (!s) return null
+  const poly = rangePolygon(s)
+  if (!poly) return null
+  return { points: poly, color: s.type.color }
+})
 </script>
 
 <template>
@@ -370,7 +552,7 @@ const preview = computed(() => {
     @mousemove="onMove"
     @mouseleave="onLeave"
     @mousedown="onMouseDown"
-    @mouseup="endPan"
+    @mouseup="onMouseUp"
     @click="onSvgClick"
     @wheel="onWheel"
   >
@@ -410,12 +592,40 @@ const preview = computed(() => {
       <polygon :points="groundPoints" fill="url(#orbitShade)" opacity="0.45" style="pointer-events:none" />
     </template>
 
+    <!-- soft cell grid (1 cell = cellSize x cellSize units). Purely visual;
+         never intercepts pointer events. -->
+    <g class="cell-grid" style="pointer-events:none">
+      <polyline
+        v-for="(pts, i) in gridLines"
+        :key="i"
+        :points="pts"
+        fill="none"
+        :stroke="planetary ? '#bfe0ff' : '#ffffff'"
+        stroke-width="0.6"
+        :opacity="planetary ? 0.16 : 0.12"
+      />
+    </g>
+
+    <!-- attack range ring for the selected/dragged defense structure -->
+    <polygon
+      v-if="rangeRing"
+      :points="rangeRing.points"
+      :fill="rangeRing.color"
+      fill-opacity="0.10"
+      :stroke="rangeRing.color"
+      stroke-opacity="0.55"
+      stroke-width="1.2"
+      stroke-dasharray="4 3"
+      style="pointer-events:none"
+    />
+
     <!-- placed structures -->
     <g
       v-for="s in structures"
       :key="s.id"
       class="structure"
-      :class="{ selectable: !selectedType, selected: s.id === selectedStructureId, busy: isBusy(s) }"
+      :class="{ selectable: !selectedType, selected: s.id === selectedStructureId, busy: isBusy(s), movable: !selectedType && !isBusy(s) }"
+      @mousedown="onStructureMouseDown(s, $event)"
       @click="onStructureClick(s, $event)"
       @mousemove="onStructureHover(s, $event)"
       @mouseleave="onStructureLeave"
@@ -444,6 +654,20 @@ const preview = computed(() => {
       <polygon :points="preview.left" :fill="shade(preview.color, 0.35)" />
       <polygon :points="preview.right" :fill="shade(preview.color, 0.2)" />
       <polygon :points="preview.top" :fill="preview.color" stroke="#ffffff" stroke-width="1.5" />
+    </g>
+
+    <!-- move ghost: shows where a dragged structure would land. Green = valid
+         drop, red = would overlap another structure. -->
+    <g v-if="movePreview" opacity="0.65" style="pointer-events: none">
+      <polygon :points="movePreview.left" :fill="shade(movePreview.color, 0.35)" />
+      <polygon :points="movePreview.right" :fill="shade(movePreview.color, 0.2)" />
+      <polygon
+        :points="movePreview.top"
+        :fill="movePreview.color"
+        stroke="#ffffff"
+        stroke-width="1.5"
+        :stroke-dasharray="movePreview.valid ? null : '3 2'"
+      />
     </g>
   </svg>
 
@@ -556,6 +780,9 @@ const preview = computed(() => {
 }
 .structure.selectable {
   cursor: pointer;
+}
+.structure.movable {
+  cursor: move;
 }
 .structure.busy {
   opacity: 0.7;

@@ -124,6 +124,27 @@ export const useGameStore = defineStore('game', {
       }
     },
 
+    /**
+     * Move an existing structure to a new (x, y) position. The server rejects
+     * moves that go out of bounds or overlap another structure.
+     */
+    async moveStructure(structureId, x, y) {
+      this.error = null
+      try {
+        const { data } = await api.patch(`/structures/${structureId}/move`, { x, y })
+        this.applySnapshot(data)
+        return true
+      } catch (e) {
+        const errors = e?.response?.data?.errors
+        this.error =
+          errors?.position?.[0] ||
+          errors?.busy?.[0] ||
+          e?.response?.data?.message ||
+          'Não foi possível mover a estrutura.'
+        return false
+      }
+    },
+
     async collectAll() {
       this.error = null
       try {
