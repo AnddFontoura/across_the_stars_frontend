@@ -5,6 +5,7 @@ export const useGameStore = defineStore('game', {
   state: () => ({
     base: null,            // { id, kind, scope, width, height, resources: {gold, metal, energy} }
     structures: [],        // placed structures
+    fleets: [],            // fleet markers (planetary base only)
     structureTypes: [],    // catalog
     // Which base is currently active: 'terrestrial' (resources) or
     // 'planetary' (orbital defense). Drives which base the API operates on.
@@ -21,6 +22,7 @@ export const useGameStore = defineStore('game', {
     applySnapshot(data) {
       this.base = data.base
       this.structures = data.structures
+      this.fleets = data.fleets || []
       this.structureTypes = data.structure_types
       // Keep the active kind in sync with what the server returned.
       if (data.base?.kind) this.activeBaseKind = data.base.kind
@@ -96,6 +98,9 @@ export const useGameStore = defineStore('game', {
       for (const fresh of incomingById.values()) {
         this.structures.push(fresh)
       }
+
+      // Fleets (planetary only): replace directly — small list, changes wholesale.
+      this.fleets = data.fleets || []
     },
 
     async placeStructure(structureTypeId, x, y) {
@@ -141,6 +146,24 @@ export const useGameStore = defineStore('game', {
           errors?.busy?.[0] ||
           e?.response?.data?.message ||
           'Não foi possível mover a estrutura.'
+        return false
+      }
+    },
+
+    /**
+     * Move a fleet marker on the planetary map. Fleets overlap freely; the
+     * server only clamps to bounds. Updates the local marker in place.
+     */
+    async moveFleet(fleetId, x, y) {
+      this.error = null
+      try {
+        const { data } = await api.patch(`/fleets/${fleetId}/position`, { x, y })
+        const fresh = data.fleet
+        const idx = this.fleets.findIndex((f) => f.id === fleetId)
+        if (idx !== -1 && fresh) Object.assign(this.fleets[idx], fresh)
+        return true
+      } catch (e) {
+        this.error = e?.response?.data?.message || 'Não foi possível mover a frota.'
         return false
       }
     },

@@ -25,6 +25,8 @@ const props = defineProps({
   planetary: { type: Boolean, default: false },
   // Size of one grid cell in generic units (1 cell = cellSize x cellSize).
   cellSize: { type: Number, default: 10 },
+  // Fleet markers (planetary base only): [{ id, name, x, y, size, ... }].
+  fleets: { type: Array, default: () => [] },
 })
 
 const emit = defineEmits([
@@ -35,6 +37,7 @@ const emit = defineEmits([
   'groundclick',
   'toggle-base',
   'move',
+  'move-fleet',
 ])
 
 // Isometric transform: a tile (gx, gy) in generic units maps to screen (sx, sy).
@@ -209,6 +212,32 @@ function rangePolygon(s) {
   return pts.join(' ')
 }
 
+// Raised height of a fleet marker (visual only, taller than structures).
+const FLEET_H = 22
+
+/**
+ * Build the iso polygons + label anchor for a fleet marker (a small floating
+ * 10x10 platform). Uses the fleet's current x/y (or a live drag position).
+ */
+function fleetPolys(f, ox = null, oy = null) {
+  const size = f.size || 10
+  const x = ox ?? f.x
+  const y = oy ?? f.y
+
+  const t1 = iso(x, y)
+  const t2 = iso(x + size, y)
+  const t3 = iso(x + size, y + size)
+  const t4 = iso(x, y + size)
+
+  const top = `${t1.x},${t1.y - FLEET_H} ${t2.x},${t2.y - FLEET_H} ${t3.x},${t3.y - FLEET_H} ${t4.x},${t4.y - FLEET_H}`
+  const left = `${t4.x},${t4.y - FLEET_H} ${t3.x},${t3.y - FLEET_H} ${t3.x},${t3.y} ${t4.x},${t4.y}`
+  const right = `${t2.x},${t2.y - FLEET_H} ${t3.x},${t3.y - FLEET_H} ${t3.x},${t3.y} ${t2.x},${t2.y}`
+  const cx = (t1.x + t3.x) / 2
+  const cy = (t1.y + t3.y) / 2 - FLEET_H
+
+  return { top, left, right, cx, cy }
+}
+
 function shade(hex, amount) {
   // darken a hex color by amount (0..1)
   const h = hex.replace('#', '')
@@ -307,6 +336,48 @@ let panStart = null // { world: {px,py}, clientX, clientY }
 const moveDrag = ref(null) // { structure, gx, gy, valid, moved }
 let moveStart = null // { structure, clientX, clientY }
 
+// --- Fleet drag state (planetary markers; free move, no collision) ---
+const fleetDrag = ref(null) // { fleet, gx, gy, moved }
+let fleetStart = null // { fleet, clientX, clientY }
+
+function onFleetMouseDown(fleet, e) {
+  if (props.selectedType) return
+  if (e.button !== undefined && e.button !== 0) return
+  e.stopPropagation()
+  fleetStart = { fleet, clientX: e.clientX, clientY: e.clientY }
+}
+
+function onFleetDrag(e) {
+  if (!fleetStart) return
+  const dist = Math.hypot(e.clientX - fleetStart.clientX, e.clientY - fleetStart.clientY)
+  if (!fleetDrag.value && dist < 5) return
+
+  const g = screenToGrid(e.clientX, e.clientY)
+  if (!g) return
+  const f = fleetStart.fleet
+  const size = f.size || 10
+  let gx = Math.round(g.gx - size / 2)
+  let gy = Math.round(g.gy - size / 2)
+  gx = Math.max(0, Math.min(gx, props.width - size))
+  gy = Math.max(0, Math.min(gy, props.height - size))
+  fleetDrag.value = { fleet: f, gx, gy, moved: true }
+}
+
+function endFleetMove() {
+  if (fleetDrag.value && fleetDrag.value.moved) {
+    const { fleet, gx, gy } = fleetDrag.value
+    if (gx !== fleet.x || gy !== fleet.y) {
+      emit('move-fleet', { id: fleet.id, x: gx, y: gy })
+    }
+    panning.value = true
+    requestAnimationFrame(() => {
+      panning.value = false
+    })
+  }
+  fleetStart = null
+  fleetDrag.value = null
+}
+
 // Rectangle overlap test mirroring the backend, excluding a given id.
 function overlapsOther(gx, gy, w, h, ignoreId) {
   for (const s of props.structures) {
@@ -324,8 +395,8 @@ function overlapsOther(gx, gy, w, h, ignoreId) {
 
 function onMouseDown(e) {
   if (props.selectedType) return // placement mode uses clicks, not drag
-  // If a structure move is starting, don't also start a pan.
-  if (moveStart || moveDrag.value) return
+  // If a structure or fleet move is starting, don't also start a pan.
+  if (moveStart || moveDrag.value || fleetStart || fleetDrag.value) return
   const w = screenToWorld(e.clientX, e.clientY)
   if (!w) return
   panStart = { clientX: e.clientX, clientY: e.clientY, center: center.value || defaultCenter() }
@@ -409,6 +480,11 @@ function endPan() {
 }
 
 function onMove(e) {
+  // Moving a fleet marker takes priority.
+  if (fleetStart) {
+    onFleetDrag(e)
+    return
+  }
   // Moving a structure takes priority over panning/placement.
   if (moveStart) {
     onMoveDrag(e)
@@ -438,12 +514,17 @@ function onMove(e) {
 function onLeave() {
   hover.value = null
   // If the pointer leaves the map mid-drag, finish gracefully.
+  if (fleetStart || fleetDrag.value) endFleetMove()
   if (moveStart || moveDrag.value) endMove()
   if (panStart) endPan()
 }
 
-// Combined mouseup: end a structure move first, otherwise end a pan.
+// Combined mouseup: end a fleet move, then a structure move, otherwise a pan.
 function onMouseUp() {
+  if (fleetStart || fleetDrag.value) {
+    endFleetMove()
+    return
+  }
   if (moveStart || moveDrag.value) {
     endMove()
     return
@@ -648,6 +729,32 @@ const rangeRing = computed(() => {
       >{{ isBusy(s) ? busyLabel(s) : 'Nv ' + s.level }}</text>
     </g>
 
+    <!-- fleet markers (planetary only): small floating platforms, draggable -->
+    <g
+      v-for="f in (planetary ? fleets : [])"
+      :key="'fleet-' + f.id"
+      class="fleet"
+      @mousedown="onFleetMouseDown(f, $event)"
+    >
+      <polygon :points="fleetPolys(f).left" fill="#1f3b6b" />
+      <polygon :points="fleetPolys(f).right" fill="#152a4f" />
+      <polygon :points="fleetPolys(f).top" fill="#3d6fc0" stroke="#9fd0ff" stroke-width="1.2" />
+      <text
+        :x="fleetPolys(f).cx"
+        :y="fleetPolys(f).cy"
+        text-anchor="middle"
+        dominant-baseline="middle"
+        class="fleet-label"
+      >🛰</text>
+    </g>
+
+    <!-- fleet drag ghost -->
+    <g v-if="fleetDrag && fleetDrag.moved" opacity="0.6" style="pointer-events:none">
+      <polygon :points="fleetPolys(fleetDrag.fleet, fleetDrag.gx, fleetDrag.gy).left" fill="#1f3b6b" />
+      <polygon :points="fleetPolys(fleetDrag.fleet, fleetDrag.gx, fleetDrag.gy).right" fill="#152a4f" />
+      <polygon :points="fleetPolys(fleetDrag.fleet, fleetDrag.gx, fleetDrag.gy).top" fill="#4caf50" stroke="#ffffff" stroke-width="1.4" />
+    </g>
+
     <!-- placement preview (never intercepts pointer events, so the click
          always reaches the ground and places the structure) -->
     <g v-if="preview" opacity="0.6" style="pointer-events: none">
@@ -783,6 +890,13 @@ const rangeRing = computed(() => {
 }
 .structure.movable {
   cursor: move;
+}
+.fleet {
+  cursor: move;
+}
+.fleet-label {
+  font-size: 8px;
+  pointer-events: none;
 }
 .structure.busy {
   opacity: 0.7;

@@ -6,6 +6,8 @@ import { useGameStore } from '../stores/game'
 import IsometricGrid from '../components/IsometricGrid.vue'
 import HangarPanel from '../components/HangarPanel.vue'
 import ShipBuilder from '../components/ShipBuilder.vue'
+import CommandersPanel from '../components/CommandersPanel.vue'
+import FleetBuilder from '../components/FleetBuilder.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -242,6 +244,25 @@ function closeBuilder() {
   showBuilder.value = false
 }
 
+// Commanders + fleet modals.
+const showCommanders = ref(false)
+const showFleets = ref(false)
+
+function openCommanders() {
+  showCommanders.value = true
+}
+
+function openFleets() {
+  showFleets.value = true
+}
+
+function closeFleets() {
+  showFleets.value = false
+  // Fleet markers live on the planetary base; refresh so new/removed fleets
+  // appear on the map after composing in the builder.
+  if (isPlanetary.value) game.refreshBase()
+}
+
 function onSelectStructure(id) {
   selectedStructureId.value = id
   confirmingDemolish.value = false
@@ -254,6 +275,8 @@ function deselect() {
   confirmingDemolish.value = false
   showHangar.value = false
   showBuilder.value = false
+  showCommanders.value = false
+  showFleets.value = false
 }
 
 // Clicking empty ground clears the selection (when not placing).
@@ -322,6 +345,11 @@ async function onPlace({ x, y }) {
 async function onMoveStructure({ id, x, y }) {
   const ok = await game.moveStructure(id, x, y)
   showFlash(ok ? 'Estrutura movida!' : game.error || 'Não foi possível mover.')
+}
+
+// Drag-to-move a fleet marker on the planetary base (free move, no collision).
+async function onMoveFleet({ id, x, y }) {
+  await game.moveFleet(id, x, y)
 }
 
 async function collect() {
@@ -496,6 +524,18 @@ const selectedIsDefense = computed(
               style="background: linear-gradient(135deg,#4fc3f7,#2a7fd8); color:#04101f; margin-top:.5rem;"
               @click="openBuilder"
             >Montar modelo de nave</button>
+            <button
+              v-if="selectedStructure.is_constructed"
+              class="upgrade"
+              style="background: linear-gradient(135deg,#c9a24b,#9c7a2e); color:#1a1204; margin-top:.5rem;"
+              @click="openCommanders"
+            >Comandantes</button>
+            <button
+              v-if="selectedStructure.is_constructed"
+              class="upgrade"
+              style="background: linear-gradient(135deg,#6fb7ff,#2f6fd6); color:#04101f; margin-top:.5rem;"
+              @click="openFleets"
+            >Frotas</button>
           </template>
 
           <!-- Planetary structures: hit points (and damage for defenses). -->
@@ -618,6 +658,7 @@ const selectedIsDefense = computed(
           :now-ts="nowTs"
           :planetary="isPlanetary"
           :cell-size="game.base.cell_size || 10"
+          :fleets="game.fleets"
           @place="onPlace"
           @select="onSelectStructure"
           @groundclick="onGroundClick"
@@ -625,6 +666,7 @@ const selectedIsDefense = computed(
           @hoverend="onGridHoverEnd"
           @toggle-base="toggleBase"
           @move="onMoveStructure"
+          @move-fleet="onMoveFleet"
         />
         <!-- Hover tooltip: accumulated resources + collect button -->
         <div
@@ -714,6 +756,10 @@ const selectedIsDefense = computed(
 
     <!-- Ship builder modal (custom models) -->
     <ShipBuilder v-if="showBuilder" @close="closeBuilder" />
+
+    <!-- Commanders + fleets modals -->
+    <CommandersPanel v-if="showCommanders" @close="showCommanders = false" />
+    <FleetBuilder v-if="showFleets" @close="closeFleets" />
   </div>
 </template>
 
