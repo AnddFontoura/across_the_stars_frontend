@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useFleetStore } from '../stores/fleet'
 import Thumb from './Thumb.vue'
 
@@ -26,10 +26,22 @@ const openSlot = ref(null)
 // Per-design quantity inputs in the build view.
 const qty = ref({})
 const flash = ref(null)
+const collecting = ref(false)
+
+// A client-side clock so the countdown ticks without re-fetching.
+const now = ref(Date.now())
+let clock = null
 
 onMounted(() => {
   // Refresh the fleet snapshot so slot count / capacity are current.
   fleet.load()
+  clock = setInterval(() => {
+    now.value = Date.now()
+  }, 1000)
+})
+
+onBeforeUnmount(() => {
+  if (clock) clearInterval(clock)
 })
 
 const slotCount = computed(() => fleet.fleet?.build_slots ?? 0)
@@ -48,9 +60,27 @@ function ordersInSlot(slotIndex) {
   return fleet.buildOrders.filter((o) => o.slot === slotIndex)
 }
 
-// Name a design by id (for the order list).
-function designName(id) {
-  return designs.value.find((d) => d.id === id)?.name || 'Nave'
+// Seconds remaining for an order, computed against the live clock so it ticks
+// down without re-fetching. Falls back to the server's remaining_seconds.
+function orderRemaining(order) {
+  if (order.finishes_at) {
+    const finish = new Date(order.finishes_at).getTime()
+    return Math.max(0, Math.ceil((finish - now.value) / 1000))
+  }
+  return Math.max(0, order.remaining_seconds || 0)
+}
+
+// Aggregated summary for a slot: total ships and the final finish time (the
+// max remaining across the slot's orders). `ready` flips true once time passes.
+function slotSummary(slotIndex) {
+  const orders = ordersInSlot(slotIndex)
+  const count = orders.length
+  const finalRemaining = orders.reduce((max, o) => Math.max(max, orderRemaining(o)), 0)
+  return {
+    count,
+    finalRemaining,
+    ready: count > 0 && finalRemaining === 0,
+  }
 }
 
 function openSlotView(i) {
@@ -74,6 +104,18 @@ async function build(design) {
   const n = qtyFor(design.id)
   const ok = await fleet.build(design.id, n)
   flash.value = ok ? `Construção de ${n}x ${design.name} iniciada.` : fleet.error
+  setTimeout(() => (flash.value = null), 2500)
+}
+
+async function collect() {
+  collecting.value = true
+  const collected = await fleet.collect()
+  collecting.value = false
+  if (collected === false) {
+    flash.value = fleet.error
+  } else {
+    flash.value = collected > 0 ? `${collected} nave(s) recolhida(s).` : 'Nenhuma nave pronta.'
+  }
   setTimeout(() => (flash.value = null), 2500)
 }
 
@@ -121,8 +163,13 @@ function formatTime(totalSeconds) {
           >
             <span class="slot-num">Slot {{ i + 1 }}</span>
             <span class="slot-state">
-              <template v-if="ordersInSlot(i).length > 0">
-                {{ ordersInSlot(i).length }} em construção
+              <template v-if="slotSummary(i).count > 0">
+                <template v-if="slotSummary(i).ready">
+                  {{ slotSummary(i).count }} pronta(s) · recolher
+                </template>
+                <template v-else>
+                  {{ slotSummary(i).count }} em construção · {{ formatTime(slotSummary(i).finalRemaining) }}
+                </template>
               </template>
               <template v-else>Vazio</template>
             </span>
@@ -134,15 +181,23 @@ function formatTime(totalSeconds) {
       <template v-else>
         <p class="crumb"><button class="link" @click="backToSlots">&larr; Slots</button> / Slot {{ openSlot + 1 }}</p>
 
-        <!-- Orders currently building in this slot -->
-        <div v-if="ordersInSlot(openSlot).length" class="in-progress">
-          <h3>Na fila deste slot</h3>
-          <ul class="order-list">
-            <li v-for="o in ordersInSlot(openSlot)" :key="o.id" class="order">
-              <span>{{ designName(o.ship_design_id) }}</span>
-              <span class="order-time">{{ formatTime(o.remaining_seconds) }}</span>
-            </li>
-          </ul>
+        <!-- Aggregated summary for this slot: one card with total ships and the
+             final finish time; a "Recolher naves" button enables once ready. -->
+        <div v-if="slotSummary(openSlot).count" class="queue-card">
+          <div class="queue-info">
+            <span class="queue-count">{{ slotSummary(openSlot).count }} nave(s) em construção</span>
+            <span v-if="!slotSummary(openSlot).ready" class="queue-time">
+              Tempo restante: <strong>{{ formatTime(slotSummary(openSlot).finalRemaining) }}</strong>
+            </span>
+            <span v-else class="queue-ready">Pronto para recolher</span>
+          </div>
+          <button
+            class="collect-btn"
+            :disabled="!slotSummary(openSlot).ready || collecting"
+            @click="collect"
+          >
+            {{ collecting ? 'Recolhendo...' : 'Recolher naves' }}
+          </button>
         </div>
 
         <p class="cap-note">Capacidade livre: <strong>{{ remaining }}</strong> / {{ capacity }}</p>
@@ -287,15 +342,37 @@ function formatTime(totalSeconds) {
   padding: 0;
   font-size: 0.85rem;
 }
-.in-progress { margin-bottom: 0.9rem; }
-.in-progress h3 { margin: 0 0 0.5rem; font-size: 0.9rem; }
-.order-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
-.order {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0.4rem 0.6rem; border-radius: 8px; font-size: 0.82rem;
-  border: 1px solid rgba(120, 160, 220, 0.2); background: #131c30;
+.queue-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.9rem;
+  padding: 0.9rem 1rem;
+  border-radius: 11px;
+  border: 1px solid rgba(120, 160, 220, 0.25);
+  background: #131c30;
 }
-.order-time { color: #f4c542; font-weight: 700; }
+.queue-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.queue-count { font-weight: 700; color: #e6eefc; font-size: 0.92rem; }
+.queue-time { font-size: 0.82rem; color: #9fb2cf; }
+.queue-time strong { color: #f4c542; }
+.queue-ready { font-size: 0.82rem; color: #8fd39a; font-weight: 700; }
+.collect-btn {
+  flex: none;
+  padding: 0.5rem 0.9rem;
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #6fe08a, #2ea866);
+  color: #04101f;
+  font-weight: 700;
+  cursor: pointer;
+}
+.collect-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .cap-note { font-size: 0.82rem; color: #9fb2cf; margin: 0 0 0.8rem; }
 .cap-note strong { color: #e6eefc; }
 .design-grid {

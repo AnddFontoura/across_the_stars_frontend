@@ -67,5 +67,18 @@ export const useFleetStore = defineStore('fleet', {
         return false
       }
     },
+
+    /** Collect ("recolher") all finished builds into the fleet. */
+    async collect() {
+      this.error = null
+      try {
+        const { data } = await api.post('/aircraft/collect')
+        this.applySnapshot(data)
+        return data.collected ?? 0
+      } catch (e) {
+        this.error = e?.response?.data?.message || 'Não foi possível recolher as naves.'
+        return false
+      }
+    },
   },
 })
