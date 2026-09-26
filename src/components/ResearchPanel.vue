@@ -83,6 +83,15 @@ function remainingFor(a) {
   return Math.max(0, Math.round((new Date(a.finish_at).getTime() - nowTs.value) / 1000))
 }
 
+// Golden overlay intensity for a technology, scaling with its researched
+// level. Ranges from a faint glow at level 1 up to a strong sheen at max.
+function goldOpacity(d) {
+  const max = d.max_level > 1 ? d.max_level : 1
+  const ratio = Math.min(1, (d.current_level || 0) / max)
+  // 0.15 floor once researched, up to ~0.7 at max level.
+  return (0.15 + ratio * 0.55).toFixed(3)
+}
+
 function formatTime(totalSeconds) {
   const t = Math.max(0, totalSeconds || 0)
   const h = Math.floor(t / 3600)
@@ -164,6 +173,19 @@ function close() {
 
         <div v-else class="item-grid">
           <div v-for="d in visible" :key="d.id" class="item-card">
+            <!-- Artwork: one image per research, shared across all levels.
+                 Technologies get a golden glow that intensifies per level. -->
+            <div class="thumb" :class="{ researched: d.current_level > 0 }">
+              <img v-if="d.image_url" :src="d.image_url" :alt="d.name" class="thumb-img" />
+              <div v-else class="thumb-ph">🖼️</div>
+              <div
+                v-if="d.type === 'technology' && d.current_level > 0"
+                class="thumb-gold"
+                :style="{ opacity: goldOpacity(d) }"
+              ></div>
+              <span v-if="d.current_level > 0" class="thumb-lvl">Nv {{ d.current_level }}</span>
+            </div>
+
             <div class="item-head">
               <span class="dot" :style="{ background: d.color || '#7ec8e3' }"></span>
               <strong>{{ d.name }}</strong>
@@ -384,6 +406,53 @@ function close() {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+.thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0e1420;
+  border: 1px solid rgba(120, 160, 220, 0.18);
+  display: grid;
+  place-items: center;
+}
+.thumb.researched {
+  border-color: rgba(255, 199, 89, 0.5);
+}
+.thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.thumb-ph {
+  font-size: 2rem;
+  opacity: 0.6;
+}
+/* Golden sheen laid over a researched technology's artwork. Opacity is
+   bound inline and grows with the researched level. */
+.thumb-gold {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 40%, rgba(255, 215, 120, 0.9), rgba(255, 190, 60, 0.25) 55%, transparent 75%),
+    linear-gradient(135deg, rgba(255, 208, 92, 0.35), rgba(212, 160, 40, 0.15));
+  mix-blend-mode: screen;
+  transition: opacity 0.4s ease;
+}
+.thumb-lvl {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #1c1405;
+  background: linear-gradient(135deg, #ffd76a, #e6a927);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
 .item-head {
   display: flex;
