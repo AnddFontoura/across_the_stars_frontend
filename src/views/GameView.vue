@@ -503,6 +503,10 @@ function showFlash(msg) {
   }, 2500)
 }
 
+function openGalaxy() {
+  router.push({ name: 'galaxy' })
+}
+
 async function logout() {
   await auth.logout()
   router.push({ name: 'login' })
@@ -575,6 +579,9 @@ const selectedIsDefense = computed(
       </div>
 
       <div class="account">
+        <button class="ghost galaxy-link" title="Ver a galáxia" @click="openGalaxy">
+          🌌 Galáxia
+        </button>
         <span v-if="auth.user" class="who">{{ auth.user.name }}</span>
         <button class="ghost" @click="logout">Sair</button>
       </div>
@@ -959,6 +966,13 @@ const selectedIsDefense = computed(
   padding: 0.35rem 0.8rem;
   border-radius: 7px;
   cursor: pointer;
+}
+.galaxy-link {
+  border-color: rgba(97, 61, 214, 0.5);
+  background: rgba(97, 61, 214, 0.15);
+}
+.galaxy-link:hover {
+  border-color: #8a6fe6;
 }
 .layout {
   flex: 1;
