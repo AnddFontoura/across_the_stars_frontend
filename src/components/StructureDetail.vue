@@ -34,6 +34,7 @@ const emit = defineEmits([
   'open-fleets',
   'open-inventory',
   'open-research',
+  'open-battle',
   'demolish',
   'close',
 ])
@@ -132,6 +133,20 @@ function formatTime(totalSeconds) {
         style="background: linear-gradient(135deg,#6fb7ff,#2f6fd6); color:#04101f;"
         @click="emit('open-fleets')"
       >Frotas</button>
+    </template>
+
+    <!-- Command stats (Centro de Operações) -->
+    <template v-else-if="s.type.category === 'command' && !isPlanetary">
+      <div class="detail-row">
+        <span>Limite de construção</span>
+        <strong>nível {{ s.level }}</strong>
+      </div>
+      <button
+        v-if="s.is_constructed"
+        class="action"
+        style="background: linear-gradient(135deg,#7ec8e3,#3f8fb0); color:#03141c;"
+        @click="emit('open-battle')"
+      >Investigação Interplanetária</button>
     </template>
 
     <!-- Inventory stats (e.g. Forte Protetor) -->

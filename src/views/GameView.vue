@@ -12,10 +12,13 @@ import StructureDetail from '../components/StructureDetail.vue'
 import ShipBuilder from '../components/ShipBuilder.vue'
 import CommandersPanel from '../components/CommandersPanel.vue'
 import FleetBuilder from '../components/FleetBuilder.vue'
+import InvestigationPanel from '../components/InvestigationPanel.vue'
+import { useBattleStore } from '../stores/battle'
 
 const router = useRouter()
 const auth = useAuthStore()
 const game = useGameStore()
+const battle = useBattleStore()
 
 const selectedType = ref(null)
 const selectedStructureId = ref(null)
@@ -62,6 +65,10 @@ onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
   updateIsMobile()
   window.addEventListener('resize', updateIsMobile)
+
+  // Surface any in-progress investigation so the "voltar à instância" button
+  // appears even after a reload.
+  battle.refreshActive()
 })
 
 onUnmounted(() => {
@@ -337,6 +344,25 @@ function closeFleets() {
   if (isPlanetary.value) game.refreshBase()
 }
 
+// Investigação Interplanetária modal (opens from the Centro de Operações, or
+// from the persistent "voltar à instância" button when a run is active).
+const showBattle = ref(false)
+
+function openBattle() {
+  showBattle.value = true
+}
+
+function closeBattle() {
+  showBattle.value = false
+}
+
+// When a battle starts/ends, dispatched fleets are locked/unlocked; refresh the
+// base map and the active-run marker so the UI reflects it.
+function onBattleChanged() {
+  game.refreshBase()
+  battle.refreshActive()
+}
+
 function onSelectStructure(payload) {
   // The grid emits { id, x, y } (click position); the queue list passes a
   // bare id. Support both.
@@ -396,6 +422,8 @@ function deselect() {
   showBuilder.value = false
   showCommanders.value = false
   showFleets.value = false
+  // Note: showBattle is intentionally NOT reset here — the investigation modal
+  // is a hub the player opens explicitly and closes explicitly.
 }
 
 // Clicking empty ground clears the selection (when not placing).
@@ -597,6 +625,7 @@ const selectedIsDefense = computed(
           @open-fleets="openFleets"
           @open-inventory="openInventory"
           @open-research="openResearch"
+          @open-battle="openBattle"
           @demolish="demolishSelected"
           @close="deselect"
         />
@@ -683,6 +712,7 @@ const selectedIsDefense = computed(
             @open-fleets="openFleets"
             @open-inventory="openInventory"
             @open-research="openResearch"
+            @open-battle="openBattle"
             @demolish="demolishSelected"
           />
         </div>
@@ -731,6 +761,7 @@ const selectedIsDefense = computed(
               @open-fleets="openFleets"
               @open-inventory="openInventory"
               @open-research="openResearch"
+              @open-battle="openBattle"
               @demolish="demolishSelected"
             />
           </div>
@@ -818,6 +849,19 @@ const selectedIsDefense = computed(
     <!-- Commanders + fleets modals -->
     <CommandersPanel v-if="showCommanders" @close="showCommanders = false" />
     <FleetBuilder v-if="showFleets" @close="closeFleets" />
+
+    <!-- Investigação Interplanetária modal -->
+    <InvestigationPanel v-if="showBattle" @close="closeBattle" @changed="onBattleChanged" />
+
+    <!-- Persistent "voltar à instância" button while a run is active -->
+    <button
+      v-if="battle.hasActive && !showBattle"
+      class="resume-fab"
+      title="Voltar à investigação em andamento"
+      @click="openBattle"
+    >
+      ⚔ Voltar à instância
+    </button>
   </div>
 </template>
 
@@ -828,6 +872,23 @@ const selectedIsDefense = computed(
   flex-direction: column;
   background: #0b0f18;
   color: #e6eefc;
+}
+.resume-fab {
+  position: fixed;
+  right: 1.2rem;
+  bottom: 1.2rem;
+  z-index: 150;
+  padding: 0.7rem 1.1rem;
+  border: 1px solid rgba(244, 197, 66, 0.5);
+  border-radius: 999px;
+  background: linear-gradient(135deg, #f4c542, #d69a2e);
+  color: #1a1204;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+.resume-fab:hover {
+  filter: brightness(1.05);
 }
 .topbar {
   display: flex;
