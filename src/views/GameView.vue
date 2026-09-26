@@ -5,6 +5,9 @@ import { useAuthStore } from '../stores/auth'
 import { useGameStore } from '../stores/game'
 import IsometricGrid from '../components/IsometricGrid.vue'
 import HangarPanel from '../components/HangarPanel.vue'
+import InventoryPanel from '../components/InventoryPanel.vue'
+import ResearchPanel from '../components/ResearchPanel.vue'
+import StructureDetail from '../components/StructureDetail.vue'
 import ShipBuilder from '../components/ShipBuilder.vue'
 import CommandersPanel from '../components/CommandersPanel.vue'
 import FleetBuilder from '../components/FleetBuilder.vue'
@@ -65,7 +68,6 @@ onUnmounted(() => {
 })
 
 const resources = computed(() => game.base?.resources || { gold: 0, metal: 0, energy: 0 })
-const totalCollected = computed(() => game.base?.total_collected || { gold: 0, metal: 0, energy: 0 })
 const protection = computed(() => game.base?.protection || 0)
 const structuresUsed = computed(() => game.base?.structures_used || 0)
 const maxStructures = computed(() => game.base?.max_structures || 0)
@@ -233,6 +235,28 @@ function closeHangar() {
   showHangar.value = false
 }
 
+// Forte Protetor inventory modal (opens from the detail panel).
+const showInventory = ref(false)
+
+function openInventory() {
+  showInventory.value = true
+}
+
+function closeInventory() {
+  showInventory.value = false
+}
+
+// Centro de Pesquisa research modal (opens from the detail panel).
+const showResearch = ref(false)
+
+function openResearch() {
+  showResearch.value = true
+}
+
+function closeResearch() {
+  showResearch.value = false
+}
+
 // Ship builder modal (custom models from modules).
 const showBuilder = ref(false)
 
@@ -263,17 +287,55 @@ function closeFleets() {
   if (isPlanetary.value) game.refreshBase()
 }
 
-function onSelectStructure(id) {
+function onSelectStructure(payload) {
+  // The grid emits { id, x, y } (click position); the queue list passes a
+  // bare id. Support both.
+  const id = typeof payload === 'object' ? payload.id : payload
   selectedStructureId.value = id
-  confirmingDemolish.value = false
   // Selecting a different structure closes any open hangar modal.
   showHangar.value = false
+  showInventory.value = false
+  showResearch.value = false
+
+  // Anchor the floating action card at the click position when we have one;
+  // otherwise (selected from the queue) center it on screen.
+  if (typeof payload === 'object' && payload.x != null) {
+    cardPos.value = { x: payload.x, y: payload.y }
+  } else {
+    cardPos.value = { x: window.innerWidth / 2, y: window.innerHeight / 2 }
+  }
+  showCard.value = true
+}
+
+// --- Floating action card (anchored at the clicked structure) ---
+const showCard = ref(false)
+const cardPos = ref({ x: 0, y: 0 })
+
+// Position the card near the click, clamped so it stays on screen.
+const cardStyle = computed(() => {
+  const CARD_W = 260
+  const CARD_H = 360
+  const margin = 12
+  let left = cardPos.value.x + 16
+  let top = cardPos.value.y - 20
+  if (left + CARD_W + margin > window.innerWidth) {
+    left = cardPos.value.x - CARD_W - 16
+  }
+  left = Math.max(margin, left)
+  top = Math.max(margin, Math.min(top, window.innerHeight - CARD_H - margin))
+  return { left: left + 'px', top: top + 'px' }
+})
+
+function closeCard() {
+  showCard.value = false
 }
 
 function deselect() {
   selectedStructureId.value = null
-  confirmingDemolish.value = false
+  showCard.value = false
   showHangar.value = false
+  showInventory.value = false
+  showResearch.value = false
   showBuilder.value = false
   showCommanders.value = false
   showFleets.value = false
@@ -301,34 +363,24 @@ async function upgradeSelected() {
   showFlash(ok ? 'Estrutura evoluída!' : game.error || 'Falha ao evoluir.')
 }
 
-// --- Demolition (with confirmation) ---
-const confirmingDemolish = ref(false)
-
-function askDemolish() {
-  confirmingDemolish.value = true
+// Collect a single selected producer (from the detail panel / action card).
+async function collectSelected() {
+  if (!selectedStructure.value) return
+  const ok = await game.collectStructure(selectedStructure.value.id)
+  showFlash(ok ? 'Recursos recolhidos!' : game.error || 'Falha ao recolher.')
 }
 
-function cancelDemolish() {
-  confirmingDemolish.value = false
-}
-
-async function confirmDemolish() {
+// Demolish the selected structure. Confirmation is handled inside
+// StructureDetail, so this fires only after the user confirms.
+async function demolishSelected() {
   if (!selectedStructure.value) return
   const ok = await game.demolishStructure(selectedStructure.value.id)
-  confirmingDemolish.value = false
   if (ok) {
     deselect()
     showFlash('Estrutura desconstruída.')
   } else {
     showFlash(game.error || 'Falha ao desconstruir.')
   }
-}
-
-// Sum of a refund object for quick "nothing to refund" checks.
-function refundTotal(structure) {
-  const r = structure?.demolition_refund
-  if (!r) return 0
-  return (r.gold || 0) + (r.metal || 0) + (r.energy || 0)
 }
 
 async function onPlace({ x, y }) {
@@ -388,8 +440,10 @@ async function toggleBase() {
   // Switching bases clears any in-flight placement/selection.
   selectedType.value = null
   selectedStructureId.value = null
-  confirmingDemolish.value = false
+  showCard.value = false
   showHangar.value = false
+  showInventory.value = false
+  showResearch.value = false
   const target = isPlanetary.value ? 'terrestrial' : 'planetary'
   await game.setBaseKind(target)
   showFlash(target === 'planetary' ? 'Base planetária' : 'Base terrestre')
@@ -472,172 +526,27 @@ const selectedIsDefense = computed(
         </p>
 
         <!-- Details / upgrade panel for a selected placed structure -->
-        <div v-if="selectedStructure" class="detail">
-          <div class="detail-head">
-            <h3>{{ selectedStructure.type.name }}</h3>
-            <button class="deselect" title="Desselecionar (Esc)" @click="deselect">✕</button>
-          </div>
-          <div class="detail-row">
-            <span>Nível</span>
-            <strong>{{ selectedStructure.level }} / {{ selectedStructure.max_level }}</strong>
-          </div>
-
-          <!-- Producer stats (terrestrial) -->
-          <template v-if="selectedStructure.type.category === 'producer'">
-            <div class="detail-row">
-              <span>Produção/min</span>
-              <strong>{{ selectedStructure.production_per_minute }}</strong>
-            </div>
-            <div class="detail-row">
-              <span>Capacidade máx.</span>
-              <strong>{{ selectedStructure.max_capacity }}</strong>
-            </div>
-            <div class="detail-row">
-              <span>Acumulado</span>
-              <strong>{{ livePending(selectedStructure) }}</strong>
-            </div>
-          </template>
-
-          <!-- Storage stats (terrestrial) -->
-          <template v-else-if="selectedStructure.type.category === 'storage'">
-            <div class="detail-row">
-              <span>Protege por recurso</span>
-              <strong>{{ selectedStructure.protection }}</strong>
-            </div>
-          </template>
-
-          <!-- Support stats (e.g. Aircraft Hangar) -->
-          <template v-else-if="selectedStructure.type.category === 'support'">
-            <div class="detail-row">
-              <span>Redução tempo de aeronave</span>
-              <strong>{{ selectedStructure.build_time_reduction }}%</strong>
-            </div>
-            <button
-              v-if="selectedStructure.is_constructed"
-              class="upgrade"
-              style="background: linear-gradient(135deg,#8e7cc3,#5a4b9c); color:#fff;"
-              @click="openHangar"
-            >Gerenciar hangar</button>
-            <button
-              v-if="selectedStructure.is_constructed"
-              class="upgrade"
-              style="background: linear-gradient(135deg,#4fc3f7,#2a7fd8); color:#04101f; margin-top:.5rem;"
-              @click="openBuilder"
-            >Montar modelo de nave</button>
-            <button
-              v-if="selectedStructure.is_constructed"
-              class="upgrade"
-              style="background: linear-gradient(135deg,#c9a24b,#9c7a2e); color:#1a1204; margin-top:.5rem;"
-              @click="openCommanders"
-            >Comandantes</button>
-            <button
-              v-if="selectedStructure.is_constructed"
-              class="upgrade"
-              style="background: linear-gradient(135deg,#6fb7ff,#2f6fd6); color:#04101f; margin-top:.5rem;"
-              @click="openFleets"
-            >Frotas</button>
-          </template>
-
-          <!-- Planetary structures: hit points (and damage for defenses). -->
-          <template v-if="isPlanetary && selectedStructure.max_hp > 0">
-            <div class="detail-row">
-              <span>Pontos de vida</span>
-              <strong>{{ selectedStructure.current_hp }} / {{ selectedStructure.max_hp }}</strong>
-            </div>
-            <div v-if="selectedStructure.damage > 0" class="detail-row">
-              <span>Dano</span>
-              <strong>{{ selectedStructure.damage }}</strong>
-            </div>
-            <div v-if="selectedStructure.range > 0" class="detail-row">
-              <span>Alcance</span>
-              <strong>{{ selectedStructure.range }} cél.</strong>
-            </div>
-          </template>
-
-          <!-- In-progress build/upgrade -->
-          <div v-if="selectedBusy" class="busy-note">
-            {{ selectedStructure.busy_kind === 'build' ? 'Construindo' : 'Evoluindo' }}...
-            <strong>{{ formatTime(remainingFor(selectedStructure)) }}</strong>
-            <template v-if="selectedStructure.busy_kind === 'upgrade' && selectedStructure.pending_level">
-              (→ nível {{ selectedStructure.pending_level }})
-            </template>
-          </div>
-
-          <div v-else-if="selectedStructure.is_max_level" class="max-note">
-            Nível máximo atingido.
-          </div>
-
-          <div v-else-if="selectedStructure.capped_by_command" class="capped-note">
-            <template v-if="commandLevel <= 0">
-              Construa um {{ isPlanetary ? 'Centro de Defesa Planetária' : 'Centro de Operações' }}
-              para evoluir esta estrutura.
-            </template>
-            <template v-else>
-              Nível limitado pelo {{ isPlanetary ? 'Centro de Defesa' : 'Centro de Operações' }}
-              (nível {{ commandLevel }}). Evolua o Centro primeiro.
-            </template>
-          </div>
-
-          <template v-else>
-            <div class="cost-label">Custo do próximo nível:</div>
-            <div class="cost-list">
-              <span
-                v-for="(meta, key) in resourceMeta"
-                :key="key"
-                v-show="selectedStructure.upgrade_cost[key] > 0"
-                class="cost-item"
-              >
-                <span class="dot" :style="{ background: meta.color }"></span>
-                {{ selectedStructure.upgrade_cost[key] }}
-              </span>
-            </div>
-            <div v-if="selectedStructure.upgrade_time" class="cost-label">
-              Tempo: {{ formatTime(selectedStructure.upgrade_time) }}
-            </div>
-            <p
-              v-if="buildsFull && selectedStructure.upgrade_time > 0"
-              class="builds-hint"
-            >
-              Máximo de {{ maxConcurrentBuilds }} obras simultâneas atingido.
-              Aguarde alguma terminar.
-            </p>
-            <button
-              class="upgrade"
-              :disabled="buildsFull && selectedStructure.upgrade_time > 0"
-              @click="upgradeSelected"
-            >Evoluir</button>
-          </template>
-
-          <!-- Demolish -->
-          <button
-            v-if="!confirmingDemolish"
-            class="demolish"
-            @click="askDemolish"
-          >Desconstruir</button>
-
-          <div v-else class="demolish-confirm">
-            <p class="demolish-q">Desconstruir esta estrutura?</p>
-            <p class="demolish-refund">
-              Reembolso (50% do investido):
-              <template v-if="refundTotal(selectedStructure) > 0">
-                <span
-                  v-for="(meta, key) in resourceMeta"
-                  :key="key"
-                  v-show="selectedStructure.demolition_refund[key] > 0"
-                  class="cost-item"
-                >
-                  <span class="dot" :style="{ background: meta.color }"></span>
-                  {{ selectedStructure.demolition_refund[key] }}
-                </span>
-              </template>
-              <template v-else><strong>nenhum</strong></template>
-            </p>
-            <div class="demolish-actions">
-              <button class="demolish-yes" @click="confirmDemolish">Confirmar</button>
-              <button class="demolish-no" @click="cancelDemolish">Cancelar</button>
-            </div>
-          </div>
-        </div>
+        <StructureDetail
+          v-if="selectedStructure"
+          :structure="selectedStructure"
+          :is-planetary="isPlanetary"
+          :command-level="commandLevel"
+          :builds-full="buildsFull"
+          :max-concurrent-builds="maxConcurrentBuilds"
+          :live-pending="livePending(selectedStructure)"
+          :remaining-seconds="remainingFor(selectedStructure)"
+          :resource-meta="resourceMeta"
+          @collect="collectSelected"
+          @upgrade="upgradeSelected"
+          @open-hangar="openHangar"
+          @open-builder="openBuilder"
+          @open-commanders="openCommanders"
+          @open-fleets="openFleets"
+          @open-inventory="openInventory"
+          @open-research="openResearch"
+          @demolish="demolishSelected"
+          @close="deselect"
+        />
         <p v-else class="hint" style="margin-top: 1rem;">
           Clique numa estrutura para ver detalhes e evoluir.
           Passe o mouse para ver o acumulado e recolher.
@@ -692,13 +601,37 @@ const selectedIsDefense = computed(
           </button>
         </div>
 
-        <!-- HUD: lifetime totals collected -->
-        <div class="hud-totals">
-          <span class="hud-title">Total já coletado</span>
-          <span v-for="(meta, key) in resourceMeta" :key="key" class="hud-item">
-            <span class="dot" :style="{ background: meta.color }"></span>
-            {{ meta.label }}: <strong>{{ totalCollected[key] }}</strong>
-          </span>
+        <!-- Floating action card: anchored at the clicked structure. Holds all
+             of the structure's options (collect, upgrade, items, etc.). -->
+        <div
+          v-if="showCard && selectedStructure"
+          class="action-card"
+          :style="cardStyle"
+        >
+          <div class="action-card-head">
+            <strong>{{ selectedStructure.type.name }} · Nv {{ selectedStructure.level }}</strong>
+            <button class="action-card-x" title="Fechar" @click="deselect">✕</button>
+          </div>
+          <StructureDetail
+            :structure="selectedStructure"
+            :is-planetary="isPlanetary"
+            :command-level="commandLevel"
+            :builds-full="buildsFull"
+            :max-concurrent-builds="maxConcurrentBuilds"
+            :live-pending="livePending(selectedStructure)"
+            :remaining-seconds="remainingFor(selectedStructure)"
+            :resource-meta="resourceMeta"
+            :show-header="false"
+            @collect="collectSelected"
+            @upgrade="upgradeSelected"
+            @open-hangar="openHangar"
+            @open-builder="openBuilder"
+            @open-commanders="openCommanders"
+            @open-fleets="openFleets"
+            @open-inventory="openInventory"
+            @open-research="openResearch"
+            @demolish="demolishSelected"
+          />
         </div>
 
         <transition name="fade">
@@ -752,6 +685,20 @@ const selectedIsDefense = computed(
       v-if="showHangar && selectedStructure"
       :structure="selectedStructure"
       @close="closeHangar"
+    />
+
+    <!-- Forte Protetor inventory modal -->
+    <InventoryPanel
+      v-if="showInventory && selectedStructure"
+      :structure="selectedStructure"
+      @close="closeInventory"
+    />
+
+    <!-- Centro de Pesquisa research modal -->
+    <ResearchPanel
+      v-if="showResearch && selectedStructure"
+      :structure="selectedStructure"
+      @close="closeResearch"
     />
 
     <!-- Ship builder modal (custom models) -->
@@ -1183,6 +1130,44 @@ const selectedIsDefense = computed(
 .loading {
   color: #93a6c6;
 }
+.action-card {
+  position: fixed;
+  z-index: 55;
+  width: 260px;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: rgba(14, 21, 36, 0.98);
+  border: 1px solid rgba(120, 160, 220, 0.35);
+  border-radius: 12px;
+  padding: 0.8rem 0.9rem;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.6);
+}
+.action-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+.action-card-head strong {
+  color: #eaf2ff;
+  font-size: 0.95rem;
+}
+.action-card-x {
+  background: transparent;
+  border: 1px solid rgba(120, 160, 220, 0.3);
+  color: #cfe0ff;
+  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  flex: none;
+  font-size: 0.8rem;
+}
+.action-card-x:hover {
+  border-color: #ff8080;
+  color: #ff8080;
+}
 .hover-tip {
   position: fixed;
   z-index: 50;
@@ -1225,30 +1210,6 @@ const selectedIsDefense = computed(
   background: #2a3550;
   color: #7f93b3;
   cursor: default;
-}
-.hud-totals {
-  position: absolute;
-  top: 14px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  background: rgba(16, 24, 42, 0.9);
-  border: 1px solid rgba(120, 160, 220, 0.2);
-  padding: 0.5rem 1rem;
-  border-radius: 10px;
-  font-size: 0.82rem;
-  color: #cbd8ef;
-}
-.hud-title {
-  color: #7f93b3;
-  font-weight: 700;
-}
-.hud-item {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
 }
 .flash {
   position: absolute;

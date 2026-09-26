@@ -555,8 +555,9 @@ function onStructureClick(structure, e) {
   // A pan drag that ends over a structure shouldn't select it.
   if (panning.value) return
   // When not placing, clicking a structure selects it (for upgrade/details).
+  // Emit the click position too, so the parent can anchor a floating card.
   e?.stopPropagation()
-  emit('select', structure.id)
+  emit('select', { id: structure.id, x: e?.clientX ?? 0, y: e?.clientY ?? 0 })
 }
 
 function onStructureHover(structure, e) {
