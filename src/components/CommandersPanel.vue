@@ -4,8 +4,9 @@ import { useCommanderStore } from '../stores/commanders'
 import Thumb from './Thumb.vue'
 
 /**
- * Commanders screen: the account pool + hourly recruitment. Recruiting one
- * generic "Comandante" takes 1 hour (one at a time, pool cap 30).
+ * Commanders screen: the account pool + recruitment. Recruiting adds a generic
+ * "Comandante" instantly, then a 1-hour cooldown must pass before recruiting
+ * another (pool cap 30).
  */
 const emit = defineEmits(['close'])
 
@@ -83,11 +84,11 @@ function close() {
             <p class="empty">Construa um Hangar de Aeronaves para recrutar comandantes.</p>
           </template>
           <template v-else-if="rec.active">
-            <p>Recrutando um comandante... <strong>{{ formatTime(remaining) }}</strong></p>
+            <p>Próximo recrutamento disponível em <strong>{{ formatTime(remaining) }}</strong></p>
           </template>
           <template v-else>
             <button class="recruit-btn" :disabled="poolFull" @click="recruit">
-              Recrutar comandante (1h)
+              Recrutar comandante
             </button>
             <span v-if="poolFull" class="muted">Pool cheio ({{ rec.pool_max }}).</span>
           </template>
