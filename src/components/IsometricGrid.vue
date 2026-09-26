@@ -341,6 +341,7 @@ const fleetDrag = ref(null) // { fleet, gx, gy, moved }
 let fleetStart = null // { fleet, clientX, clientY }
 
 function onFleetMouseDown(fleet, e) {
+  if (!e._touch && touchJustHappened()) return // ignore emulated mouse
   if (props.selectedType) return
   if (e.button !== undefined && e.button !== 0) return
   e.stopPropagation()
@@ -394,6 +395,7 @@ function overlapsOther(gx, gy, w, h, ignoreId) {
 }
 
 function onMouseDown(e) {
+  if (!e._touch && touchJustHappened()) return // ignore emulated mouse
   if (props.selectedType) return // placement mode uses clicks, not drag
   // If a structure or fleet move is starting, don't also start a pan.
   if (moveStart || moveDrag.value || fleetStart || fleetDrag.value) return
@@ -406,6 +408,7 @@ function onMouseDown(e) {
 // Mousedown directly on a structure: begin a potential move drag (only when
 // not in placement mode and the structure isn't under construction/upgrade).
 function onStructureMouseDown(structure, e) {
+  if (!e._touch && touchJustHappened()) return // ignore emulated mouse
   if (props.selectedType) return
   if (isBusy(structure)) return
   // Left button only.
@@ -532,12 +535,177 @@ function onMouseUp() {
   endPan()
 }
 
+// -------------------------------------------------------------------------
+// Touch support (phones/tablets). One finger pans / drags / taps; two fingers
+// pinch-zoom. Touch points are fed into the exact same coordinate + gesture
+// functions used by the mouse, via a small event shim.
+// -------------------------------------------------------------------------
+
+// After a touch interaction, browsers synthesize mouse events (mousedown/up/
+// click). This timestamp lets the mouse handlers ignore that emulated burst so
+// a tap doesn't fire its intent twice.
+let lastTouchAt = 0
+function touchJustHappened() {
+  return Date.now() - lastTouchAt < 600
+}
+
+// Pinch state: distance + midpoint between the two active fingers.
+let pinch = null // { dist, mid: {x, y} }
+// Which single-finger gesture is active this touch: 'pan' | 'move' | 'fleet'
+// | 'place' | 'tap'. Set on touchstart, resolved on touchend.
+let touchGesture = null
+// Remembered start point + a moved flag so we can tell a tap from a drag.
+let touchStart = null // { x, y, moved }
+// A structure/fleet the touch started on (for tap-select / drag-move).
+let touchTarget = null // { kind: 'structure'|'fleet', item }
+
+function touchDistance(t) {
+  const dx = t[0].clientX - t[1].clientX
+  const dy = t[0].clientY - t[1].clientY
+  return Math.hypot(dx, dy)
+}
+
+function touchMid(t) {
+  return {
+    x: (t[0].clientX + t[1].clientX) / 2,
+    y: (t[0].clientY + t[1].clientY) / 2,
+  }
+}
+
+// Build a minimal mouse-like event for the existing handlers. Tagged with
+// `_touch` so the mouse guards can tell a shim apart from a real mouse event.
+function shim(touch) {
+  return {
+    clientX: touch.clientX,
+    clientY: touch.clientY,
+    button: 0,
+    _touch: true,
+    stopPropagation() {},
+    preventDefault() {},
+  }
+}
+
+// touchstart on a structure: remember it as a potential tap/move target.
+function onStructureTouchStart(structure, e) {
+  if (props.selectedType) return
+  touchTarget = { kind: 'structure', item: structure }
+}
+
+// touchstart on a fleet marker: remember it as a potential tap/move target.
+function onFleetTouchStart(fleet, e) {
+  if (props.selectedType) return
+  touchTarget = { kind: 'fleet', item: fleet }
+}
+
+function onTouchStart(e) {
+  lastTouchAt = Date.now()
+  const t = e.touches
+  if (t.length === 2) {
+    // Begin a pinch: cancel any in-flight single-finger gesture.
+    pinch = { dist: touchDistance(t), mid: touchMid(t) }
+    touchGesture = null
+    if (panStart) endPan()
+    if (moveStart || moveDrag.value) endMove()
+    if (fleetStart || fleetDrag.value) endFleetMove()
+    return
+  }
+  if (t.length !== 1) return
+
+  const pt = t[0]
+  touchStart = { x: pt.clientX, y: pt.clientY, moved: false }
+
+  if (props.selectedType) {
+    // Placement mode: track a preview point; a tap drops the structure.
+    touchGesture = 'place'
+    onMove(shim(pt))
+    return
+  }
+
+  // Dragging a structure/fleet the finger landed on, else pan the map.
+  if (touchTarget?.kind === 'structure' && !isBusy(touchTarget.item)) {
+    touchGesture = 'move'
+    onStructureMouseDown(touchTarget.item, shim(pt))
+  } else if (touchTarget?.kind === 'fleet') {
+    touchGesture = 'fleet'
+    onFleetMouseDown(touchTarget.item, shim(pt))
+  } else {
+    touchGesture = 'pan'
+    onMouseDown(shim(pt))
+  }
+}
+
+function onTouchMove(e) {
+  lastTouchAt = Date.now()
+  const t = e.touches
+  // Pinch-zoom around the midpoint of the two fingers.
+  if (pinch && t.length === 2) {
+    e.preventDefault()
+    const dist = touchDistance(t)
+    const mid = touchMid(t)
+    if (pinch.dist > 0) {
+      setZoom(zoom.value * (dist / pinch.dist), mid)
+    }
+    pinch = { dist, mid }
+    return
+  }
+  if (t.length !== 1 || !touchStart) return
+
+  const pt = t[0]
+  const moved = Math.hypot(pt.clientX - touchStart.x, pt.clientY - touchStart.y)
+  if (moved > 6) touchStart.moved = true
+  e.preventDefault()
+  onMove(shim(pt))
+}
+
+function onTouchEnd(e) {
+  lastTouchAt = Date.now()
+  // End a pinch once fewer than two fingers remain.
+  if (pinch && e.touches.length < 2) {
+    pinch = null
+    // A remaining finger shouldn't resurrect a stale single-finger gesture.
+    touchGesture = null
+    touchTarget = null
+    touchStart = null
+    return
+  }
+  if (e.touches.length > 0) return // still multi-touch; wait
+
+  const wasTap = touchStart && !touchStart.moved
+  const startPt = touchStart ? { clientX: touchStart.x, clientY: touchStart.y } : null
+
+  // Finish whichever gesture was active.
+  if (touchGesture === 'fleet') {
+    endFleetMove()
+  } else if (touchGesture === 'move') {
+    endMove()
+  } else if (touchGesture === 'pan') {
+    endPan()
+  }
+
+  // Resolve a tap into the same intent a click would produce.
+  if (wasTap && startPt) {
+    if (touchGesture === 'place') {
+      if (hover.value) emit('place', { x: hover.value.gx, y: hover.value.gy })
+    } else if (touchTarget?.kind === 'structure') {
+      emit('select', { id: touchTarget.item.id, x: startPt.clientX, y: startPt.clientY })
+    } else if (!touchTarget) {
+      emit('groundclick')
+    }
+  }
+
+  touchGesture = null
+  touchTarget = null
+  touchStart = null
+}
+
 // Click handler on the whole SVG. While placing, a click anywhere
 // (even over the ghost preview or another structure) drops the structure at
 // the previewed, in-bounds position. This prevents large structures like the
 // Command Center from being impossible to place because the ghost/other
 // structures sat under the cursor.
 function onSvgClick() {
+  // Ignore the emulated click that follows a touch (handled in onTouchEnd).
+  if (touchJustHappened()) return
   // A click that was really a pan drag shouldn't place or deselect.
   if (panning.value) return
   if (props.selectedType) {
@@ -549,6 +717,8 @@ function onSvgClick() {
 }
 
 function onStructureClick(structure, e) {
+  // Ignore the emulated click that follows a touch (handled in onTouchEnd).
+  if (touchJustHappened()) return
   // While placing, let the click bubble to the SVG so the new structure is
   // dropped even if the cursor is over an existing structure.
   if (props.selectedType) return
@@ -637,6 +807,10 @@ const rangeRing = computed(() => {
     @mouseup="onMouseUp"
     @click="onSvgClick"
     @wheel="onWheel"
+    @touchstart="onTouchStart"
+    @touchmove="onTouchMove"
+    @touchend="onTouchEnd"
+    @touchcancel="onTouchEnd"
   >
     <defs>
       <linearGradient id="grassShade" x1="0" y1="0" x2="0" y2="1">
@@ -711,6 +885,7 @@ const rangeRing = computed(() => {
       @click="onStructureClick(s, $event)"
       @mousemove="onStructureHover(s, $event)"
       @mouseleave="onStructureLeave"
+      @touchstart="onStructureTouchStart(s, $event)"
     >
       <polygon :points="structurePolys(s).left" :fill="shade(s.type.color, 0.35)" />
       <polygon :points="structurePolys(s).right" :fill="shade(s.type.color, 0.2)" />
@@ -736,6 +911,7 @@ const rangeRing = computed(() => {
       :key="'fleet-' + f.id"
       class="fleet"
       @mousedown="onFleetMouseDown(f, $event)"
+      @touchstart="onFleetTouchStart(f, $event)"
     >
       <polygon :points="fleetPolys(f).left" fill="#1f3b6b" />
       <polygon :points="fleetPolys(f).right" fill="#152a4f" />

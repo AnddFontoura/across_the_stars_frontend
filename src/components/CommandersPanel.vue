@@ -147,4 +147,7 @@ function close() {
 .prof-title { font-size: .72rem; color: #7f93b3; text-transform: uppercase; margin: .4rem 0 .2rem; letter-spacing: .04em; }
 .prof-row { display: flex; justify-content: space-between; font-size: .82rem; color: #9fb2cf; padding: .1rem 0; }
 .prof-lvl { font-weight: 700; color: #eaf2ff; }
+@media (max-width: 520px) {
+  .cmd-grid { grid-template-columns: 1fr; }
+}
 </style>

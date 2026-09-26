@@ -365,4 +365,8 @@ function formatTime(totalSeconds) {
 .flash { font-size: 0.82rem; color: #8fd39a; margin: 0.8rem 0 0; text-align: center; }
 .fade-enter-active, .fade-leave-active { transition: opacity 0.3s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+@media (max-width: 520px) {
+  .slot-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .design-grid { grid-template-columns: 1fr; }
+}
 </style>

@@ -14,8 +14,33 @@ body {
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   background: #0b0f18;
   color: #e6eefc;
+  /* Smoother text on mobile and no bounce/overscroll on touch. */
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+  /* Remove the grey tap flash on touch controls. */
+  -webkit-tap-highlight-color: transparent;
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
 }
 
 button {
   font-family: inherit;
+}
+
+/* Prefer the dynamic viewport height on mobile browsers (accounts for the
+   address bar collapsing) with a static fallback for older engines. */
+@supports (height: 100dvh) {
+  html,
+  body,
+  #app {
+    height: 100dvh;
+  }
+}
+
+/* Comfortable touch targets: on coarse pointers (phones/tablets) give buttons
+   a minimum tappable height. Fine-pointer (mouse) layouts are untouched. */
+@media (pointer: coarse) {
+  button {
+    min-height: 34px;
+  }
 }

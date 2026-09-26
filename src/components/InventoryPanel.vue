@@ -265,4 +265,16 @@ function close() {
 .fade-leave-to {
   opacity: 0;
 }
+@media (max-width: 520px) {
+  .modal {
+    padding: 1rem 0.9rem;
+    max-height: 92vh;
+  }
+  .item-grid {
+    grid-template-columns: 1fr;
+  }
+  .filters {
+    flex-wrap: wrap;
+  }
+}
 </style>

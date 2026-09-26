@@ -7,6 +7,7 @@ import IsometricGrid from '../components/IsometricGrid.vue'
 import HangarPanel from '../components/HangarPanel.vue'
 import InventoryPanel from '../components/InventoryPanel.vue'
 import ResearchPanel from '../components/ResearchPanel.vue'
+import BuildCatalog from '../components/BuildCatalog.vue'
 import StructureDetail from '../components/StructureDetail.vue'
 import ShipBuilder from '../components/ShipBuilder.vue'
 import CommandersPanel from '../components/CommandersPanel.vue'
@@ -59,12 +60,15 @@ onMounted(async () => {
   }, 10000)
 
   window.addEventListener('keydown', onKeydown)
+  updateIsMobile()
+  window.addEventListener('resize', updateIsMobile)
 })
 
 onUnmounted(() => {
   if (ticker) clearInterval(ticker)
   if (poller) clearInterval(poller)
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('resize', updateIsMobile)
 })
 
 const resources = computed(() => game.base?.resources || { gold: 0, metal: 0, energy: 0 })
@@ -213,11 +217,57 @@ async function collectHovered() {
   closeTooltip()
 }
 
+// --- Mobile layout state ---
+// On narrow screens the two side panels become slide-in drawers toggled by
+// floating buttons, and the selected-structure detail becomes a bottom sheet.
+const isMobile = ref(false)
+const showLeftDrawer = ref(false) // "Estruturas" / detail panel
+const showRightDrawer = ref(false) // "Obras em andamento" queue
+
+function updateIsMobile() {
+  isMobile.value = window.matchMedia('(max-width: 900px)').matches
+  // Leaving mobile closes any open drawer so the desktop layout is clean.
+  if (!isMobile.value) {
+    showLeftDrawer.value = false
+    showRightDrawer.value = false
+  }
+}
+
+function toggleLeftDrawer() {
+  showLeftDrawer.value = !showLeftDrawer.value
+  if (showLeftDrawer.value) showRightDrawer.value = false
+}
+
+function toggleRightDrawer() {
+  showRightDrawer.value = !showRightDrawer.value
+  if (showRightDrawer.value) showLeftDrawer.value = false
+}
+
+function closeDrawers() {
+  showLeftDrawer.value = false
+  showRightDrawer.value = false
+}
+
+// Build catalog modal: a single button opens a centered modal with the
+// buildable structures as image cards (hover shows a description).
+const showCatalog = ref(false)
+
+function openCatalog() {
+  showCatalog.value = true
+}
+
+function closeCatalog() {
+  showCatalog.value = false
+}
+
 function selectType(type) {
   if (isTypeDisabled(type)) return
-  selectedType.value = selectedType.value?.id === type.id ? null : type
+  selectedType.value = type
   // Entering placement mode clears any selected structure.
-  if (selectedType.value) selectedStructureId.value = null
+  selectedStructureId.value = null
+  // Close the catalog modal and any drawer so the terrain is clear to tap.
+  showCatalog.value = false
+  closeDrawers()
 }
 
 const selectedStructure = computed(() =>
@@ -297,6 +347,13 @@ function onSelectStructure(payload) {
   showInventory.value = false
   showResearch.value = false
 
+  // On mobile, show the detail as a bottom sheet instead of a floating card.
+  if (isMobile.value) {
+    showCard.value = false
+    showRightDrawer.value = false
+    return
+  }
+
   // Anchor the floating action card at the click position when we have one;
   // otherwise (selected from the queue) center it on screen.
   if (typeof payload === 'object' && payload.x != null) {
@@ -350,7 +407,9 @@ function onGroundClick() {
 // Esc cancels placement mode or clears the current selection.
 function onKeydown(e) {
   if (e.key !== 'Escape') return
-  if (selectedType.value) {
+  if (showCatalog.value) {
+    showCatalog.value = false
+  } else if (selectedType.value) {
     selectedType.value = null
   } else if (selectedStructureId.value !== null) {
     deselect()
@@ -461,7 +520,7 @@ const selectedIsDefense = computed(
     <!-- Top bar -->
     <header class="topbar">
       <div class="brand">
-        Across the Stars
+        <span class="brand-name">Across the Stars</span>
         <span class="base-badge" :class="{ planetary: isPlanetary }">
           {{ isPlanetary ? '🛰️ Base planetária' : '🌍 Base terrestre' }}
         </span>
@@ -494,28 +553,22 @@ const selectedIsDefense = computed(
     </header>
 
     <div class="layout">
-      <!-- Sidebar: structure catalog -->
-      <aside class="sidebar">
-        <h3>Estruturas</h3>
-        <p class="hint">Selecione e clique no terreno para posicionar.</p>
+      <!-- Mobile drawer backdrop -->
+      <div
+        v-if="isMobile && (showLeftDrawer || showRightDrawer)"
+        class="drawer-backdrop"
+        @click="closeDrawers"
+      ></div>
 
-        <button
-          v-for="type in game.structureTypes"
-          :key="type.id"
-          class="struct-btn"
-          :class="{ active: selectedType?.id === type.id }"
-          :disabled="isTypeDisabled(type)"
-          @click="selectType(type)"
-        >
-          <span class="swatch" :style="{ background: type.color }"></span>
-          <span class="struct-info">
-            <strong>{{ type.name }}</strong>
-            <small>
-              {{ type.width }}x{{ type.height }} · obra {{ formatTime(type.build_time) }}
-              <template v-if="type.is_unique && existingTypeIds.includes(type.id)"> · já construído</template>
-              <template v-else-if="isLimitReached(type)"> · limite atingido</template>
-            </small>
-          </span>
+      <!-- Sidebar: structure catalog -->
+      <aside class="sidebar" :class="{ 'drawer-open': showLeftDrawer }">
+        <h3>Estruturas</h3>
+        <p class="hint">Abra o catálogo, escolha e clique no terreno para posicionar.</p>
+
+        <!-- Opens the build catalog modal (image grid + hover descriptions). -->
+        <button class="build-open" @click="openCatalog">
+          <span>🏗️ Construir</span>
+          <small>{{ game.structureTypes.length }} disponíveis</small>
         </button>
 
         <button class="collect" @click="collect">Coletar recursos</button>
@@ -601,10 +654,10 @@ const selectedIsDefense = computed(
           </button>
         </div>
 
-        <!-- Floating action card: anchored at the clicked structure. Holds all
-             of the structure's options (collect, upgrade, items, etc.). -->
+        <!-- Floating action card (desktop): anchored at the clicked structure.
+             Holds all of the structure's options (collect, upgrade, items). -->
         <div
-          v-if="showCard && selectedStructure"
+          v-if="!isMobile && showCard && selectedStructure"
           class="action-card"
           :style="cardStyle"
         >
@@ -637,10 +690,55 @@ const selectedIsDefense = computed(
         <transition name="fade">
           <div v-if="flash" class="flash">{{ flash }}</div>
         </transition>
+
+        <!-- Mobile floating toggles for the two side panels (drawers). -->
+        <div v-if="isMobile" class="mobile-fabs">
+          <button class="fab" :class="{ active: showLeftDrawer }" @click="toggleLeftDrawer">
+            🏗️<span class="fab-label">Painel</span>
+          </button>
+          <button class="fab" :class="{ active: showRightDrawer }" @click="toggleRightDrawer">
+            ⏳<span class="fab-label">Obras</span>
+            <span v-if="buildsInProgress > 0" class="fab-badge">{{ buildsInProgress }}</span>
+          </button>
+        </div>
+
+        <!-- Mobile bottom sheet: selected-structure detail + actions. -->
+        <transition name="sheet">
+          <div
+            v-if="isMobile && selectedStructure"
+            class="bottom-sheet"
+          >
+            <div class="sheet-grip" @click="deselect"></div>
+            <div class="sheet-head">
+              <strong>{{ selectedStructure.type.name }} · Nv {{ selectedStructure.level }}</strong>
+              <button class="action-card-x" title="Fechar" @click="deselect">✕</button>
+            </div>
+            <StructureDetail
+              :structure="selectedStructure"
+              :is-planetary="isPlanetary"
+              :command-level="commandLevel"
+              :builds-full="buildsFull"
+              :max-concurrent-builds="maxConcurrentBuilds"
+              :live-pending="livePending(selectedStructure)"
+              :remaining-seconds="remainingFor(selectedStructure)"
+              :resource-meta="resourceMeta"
+              :show-header="false"
+              @collect="collectSelected"
+              @upgrade="upgradeSelected"
+              @open-hangar="openHangar"
+              @open-builder="openBuilder"
+              @open-commanders="openCommanders"
+              @open-fleets="openFleets"
+              @open-inventory="openInventory"
+              @open-research="openResearch"
+              @demolish="demolishSelected"
+            />
+          </div>
+        </transition>
       </main>
 
       <!-- Right panel: queue of ongoing builds/upgrades with live countdowns -->
-      <aside class="queue">
+      <aside class="queue" :class="{ 'drawer-open': showRightDrawer }">
         <div class="queue-head">
           <h3>Obras em andamento</h3>
           <span class="queue-count" :class="{ full: buildsFull }">
@@ -699,6 +797,19 @@ const selectedIsDefense = computed(
       v-if="showResearch && selectedStructure"
       :structure="selectedStructure"
       @close="closeResearch"
+    />
+
+    <!-- Build catalog modal (image grid + hover descriptions) -->
+    <BuildCatalog
+      v-if="showCatalog"
+      :types="game.structureTypes"
+      :is-disabled="isTypeDisabled"
+      :is-limit-reached="isLimitReached"
+      :existing-type-ids="existingTypeIds"
+      :is-planetary="isPlanetary"
+      :format-time="formatTime"
+      @select="selectType"
+      @close="closeCatalog"
     />
 
     <!-- Ship builder modal (custom models) -->
@@ -808,23 +919,28 @@ const selectedIsDefense = computed(
   font-size: 0.8rem;
   color: #7f93b3;
 }
-.struct-btn {
+.build-open {
   width: 100%;
   display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  padding: 0.6rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  padding: 0.65rem 0.8rem;
   margin-bottom: 0.5rem;
   border-radius: 9px;
-  border: 1px solid rgba(120, 160, 220, 0.2);
+  border: 1px solid rgba(120, 160, 220, 0.25);
   background: #131c30;
   color: #e6eefc;
   cursor: pointer;
-  text-align: left;
+  font-weight: 700;
 }
-.struct-btn.active {
+.build-open:hover {
   border-color: #4fc3f7;
   box-shadow: 0 0 0 1px #4fc3f7 inset;
+}
+.build-open small {
+  color: #8496b5;
+  font-weight: 600;
 }
 .swatch {
   width: 22px;
@@ -832,13 +948,7 @@ const selectedIsDefense = computed(
   border-radius: 5px;
   flex: none;
 }
-.struct-info {
-  display: flex;
-  flex-direction: column;
-}
-.struct-info small {
-  color: #8496b5;
-}
+
 .collect {
   width: 100%;
   margin-top: 0.5rem;
@@ -1229,5 +1339,204 @@ const selectedIsDefense = computed(
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+/* Hidden on desktop; only used on mobile. */
+.drawer-backdrop,
+.mobile-fabs,
+.bottom-sheet {
+  display: none;
+}
+
+/* ============================ MOBILE ============================ */
+@media (max-width: 900px) {
+  /* Compact top bar that wraps instead of overflowing. */
+  .topbar {
+    padding: 0.5rem 0.7rem;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.6rem;
+  }
+  .brand {
+    font-size: 0.9rem;
+    gap: 0.4rem;
+  }
+  .brand-name {
+    /* Keep the badge; drop the long product name on tiny screens. */
+    display: none;
+  }
+  .base-badge {
+    font-size: 0.68rem;
+  }
+  .account {
+    margin-left: auto;
+    gap: 0.5rem;
+  }
+  .who {
+    display: none;
+  }
+  /* Resources become a horizontally scrollable strip spanning the full row. */
+  .resources {
+    order: 3;
+    width: 100%;
+    gap: 0.7rem;
+    overflow-x: auto;
+    padding-bottom: 0.15rem;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .resources::-webkit-scrollbar {
+    display: none;
+  }
+  .res {
+    flex: none;
+    font-size: 0.82rem;
+    gap: 0.3rem;
+  }
+  .res-label {
+    font-size: 0.72rem;
+  }
+
+  /* The stage takes the whole width; sidebars slide in as drawers over it. */
+  .layout {
+    position: relative;
+  }
+  .sidebar,
+  .queue {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 45;
+    width: min(300px, 86vw);
+    transition: transform 0.28s ease;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+  }
+  .sidebar {
+    left: 0;
+    transform: translateX(-102%);
+    border-right: 1px solid rgba(120, 160, 220, 0.25);
+  }
+  .queue {
+    right: 0;
+    transform: translateX(102%);
+    border-left: 1px solid rgba(120, 160, 220, 0.25);
+  }
+  .sidebar.drawer-open,
+  .queue.drawer-open {
+    transform: translateX(0);
+  }
+  .drawer-backdrop {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 40;
+    background: rgba(4, 8, 16, 0.5);
+  }
+
+  /* Floating toggles overlaid on the map. */
+  .mobile-fabs {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    position: absolute;
+    left: 12px;
+    top: 12px;
+    z-index: 30;
+  }
+  .fab {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    width: 52px;
+    height: 52px;
+    border-radius: 14px;
+    border: 1px solid rgba(120, 160, 220, 0.3);
+    background: rgba(16, 24, 42, 0.92);
+    color: #cfe0ff;
+    font-size: 1.2rem;
+    cursor: pointer;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  }
+  .fab.active {
+    border-color: #4fc3f7;
+    box-shadow: 0 0 0 1px #4fc3f7 inset, 0 6px 18px rgba(0, 0, 0, 0.45);
+  }
+  .fab-label {
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+  }
+  .fab-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: #f4c542;
+    color: #04101f;
+    font-size: 0.68rem;
+    font-weight: 800;
+    display: grid;
+    place-items: center;
+  }
+
+  /* Selected-structure detail as a bottom sheet. */
+  .bottom-sheet {
+    display: block;
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 46;
+    max-height: 72vh;
+    overflow-y: auto;
+    background: #0e1524;
+    border-top: 1px solid rgba(120, 160, 220, 0.3);
+    border-radius: 16px 16px 0 0;
+    padding: 0.4rem 1rem 1.1rem;
+    box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.55);
+  }
+  .sheet-grip {
+    width: 42px;
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(120, 160, 220, 0.5);
+    margin: 0.4rem auto 0.6rem;
+    cursor: pointer;
+  }
+  .sheet-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    margin-bottom: 0.5rem;
+  }
+  .sheet-head strong {
+    color: #eaf2ff;
+    font-size: 0.95rem;
+  }
+  .sheet-enter-active,
+  .sheet-leave-active {
+    transition: transform 0.28s ease, opacity 0.28s ease;
+  }
+  .sheet-enter-from,
+  .sheet-leave-to {
+    transform: translateY(100%);
+    opacity: 0.4;
+  }
+}
+
+/* Extra squeeze for very small phones. */
+@media (max-width: 480px) {
+  .base-badge .b-long {
+    display: none;
+  }
+  .topbar {
+    padding: 0.45rem 0.55rem;
+  }
 }
 </style>
