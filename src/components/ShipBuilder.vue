@@ -63,6 +63,8 @@ const summary = computed(() => {
   let movement = b.movement
   let shield = b.shield
   let hull = b.hull
+  let energyCapacity = b.energy_capacity || 0
+  let energyUpkeep = b.energy_upkeep || 0
   let usedSpace = 0
   let buildTime = b.build_time
   const cost = { gold: b.cost.gold, metal: b.cost.metal, energy: b.cost.energy }
@@ -78,6 +80,8 @@ const summary = computed(() => {
     movement += m.movement * q
     shield += m.shield * q
     hull += m.hull * q
+    energyCapacity += (m.energy_capacity || 0) * q
+    energyUpkeep += (m.energy_upkeep || 0) * q
     usedSpace += m.space * q
     buildTime += m.build_time_add * q
     cost.gold += m.cost.gold * q
@@ -92,6 +96,7 @@ const summary = computed(() => {
 
   return {
     movement, shield, hull, usedSpace,
+    energyCapacity, energyUpkeep,
     totalSpace: b.storage,
     freeSpace: Math.max(0, b.storage - usedSpace),
     attack, weaponType, weaponRange, buildTime, cost, moduleCount,
@@ -211,6 +216,8 @@ function close() {
                     <template v-if="m.hull > 0"> · estr {{ m.hull }}</template>
                     <template v-if="m.shield > 0"> · esc {{ m.shield }}</template>
                     <template v-if="m.movement > 0"> · mov {{ m.movement }}</template>
+                    <template v-if="m.energy_capacity > 0"> · ⚡tanque {{ m.energy_capacity }}</template>
+                    <template v-if="m.energy_upkeep > 0"> · ⚡uso {{ m.energy_upkeep }}</template>
                   </small>
                 </span>
                 <span class="mod-qty">
@@ -235,6 +242,8 @@ function close() {
             <div class="stat"><span>Estrutura</span><strong>{{ summary.hull }}</strong></div>
             <div class="stat"><span>Escudo</span><strong>{{ summary.shield }}</strong></div>
             <div class="stat"><span>Movimento</span><strong>{{ summary.movement }}</strong></div>
+            <div class="stat"><span>Tanque de energia</span><strong>⚡ {{ summary.energyCapacity }}</strong></div>
+            <div class="stat"><span>Consumo por ação</span><strong>⚡ {{ summary.energyUpkeep }}</strong></div>
             <div class="stat"><span>Tempo</span><strong>{{ formatTime(summary.buildTime) }}</strong></div>
             <div class="stat"><span>Custo</span>
               <strong>

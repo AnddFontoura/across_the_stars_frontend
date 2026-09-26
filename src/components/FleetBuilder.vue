@@ -1,6 +1,7 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useCommanderStore } from '../stores/commanders'
+import { useGameStore } from '../stores/game'
 
 /**
  * Fleet builder: name a fleet, assign a commander, and compose it from ship
@@ -11,6 +12,7 @@ import { useCommanderStore } from '../stores/commanders'
 const emit = defineEmits(['close'])
 
 const store = useCommanderStore()
+const game = useGameStore()
 
 const name = ref('')
 const commanderId = ref(null)
@@ -21,7 +23,11 @@ const flash = ref(null)
 
 const CLASS_LABELS = { cruiser: 'Cruzador', battleship: 'Encouraçado', frigate: 'Fragata', fighter: 'Caça' }
 
-onMounted(() => store.loadFleets())
+onMounted(() => {
+  store.loadFleets()
+  // Ensure the shared energy pool is available for the refuel controls.
+  if (!game.base) game.loadBase()
+})
 
 const maxSlots = computed(() => store.limits.max_slots)
 const maxPerSlot = computed(() => store.limits.max_per_slot)
@@ -96,6 +102,52 @@ async function remove(f) {
   if (editingId.value === f.id) startNew()
 }
 
+// --- energy / refuel ---
+
+// The player's shared energy pool (from the base resources snapshot).
+const energyPool = computed(() => game.base?.resources?.energy ?? 0)
+
+// Slider position per fleet id. Initialized lazily to the fleet's current
+// energy the first time we render its control.
+const refuelDraft = reactive({})
+
+function draftFor(f) {
+  if (refuelDraft[f.id] === undefined) refuelDraft[f.id] = f.energy
+  return refuelDraft[f.id]
+}
+
+// Max the slider can reach for a fleet: its tank capacity, but never asking
+// for more energy than the pool can currently supply on top of what it holds.
+function refuelMax(f) {
+  const capacity = f.energy_capacity || 0
+  return Math.min(capacity, f.energy + energyPool.value)
+}
+
+function onDraftInput(f, value) {
+  const n = Math.max(0, Math.min(refuelMax(f), parseInt(value, 10) || 0))
+  refuelDraft[f.id] = n
+}
+
+const refuelingId = ref(null)
+
+async function applyRefuel(f) {
+  const target = refuelDraft[f.id]
+  if (target === undefined || target === f.energy) return
+  refuelingId.value = f.id
+  const ok = await store.refuelFleet(f.id, target)
+  if (ok) {
+    // Pool changed: refresh the base snapshot so the resource bar is accurate.
+    await game.refreshBase?.()
+    delete refuelDraft[f.id]
+    flash.value = 'Frota reabastecida!'
+    setTimeout(() => (flash.value = null), 2000)
+  } else {
+    flash.value = store.error
+    setTimeout(() => (flash.value = null), 3000)
+  }
+  refuelingId.value = null
+}
+
 function close() {
   emit('close')
 }
@@ -164,6 +216,57 @@ function close() {
             <p class="fleet-stats">
               ⚔ {{ f.summary.attack }} · 🛡 {{ f.summary.shield }} · 🧱 {{ f.summary.hull }} · 🚀 {{ f.summary.movement }}
             </p>
+
+            <!-- Energy tank + refuel slider -->
+            <div class="energy">
+              <div class="energy-head">
+                <span :class="{ stranded: f.energy <= 0 }">
+                  ⚡ {{ f.energy }} / {{ f.energy_capacity }}
+                  <template v-if="f.energy_capacity > 0">
+                    ({{ Math.round((f.energy / f.energy_capacity) * 100) }}%)
+                  </template>
+                </span>
+                <small v-if="f.energy <= 0 && f.energy_capacity > 0" class="stranded">
+                  Sem energia — não pode se mover
+                </small>
+              </div>
+
+              <template v-if="f.in_battle">
+                <p class="muted">Frota em investigação — não pode ser reabastecida.</p>
+              </template>
+              <template v-else-if="f.energy_capacity <= 0">
+                <p class="muted">Este modelo não possui capacidade de energia configurada.</p>
+              </template>
+              <template v-else>
+                <input
+                  class="slider"
+                  type="range"
+                  min="0"
+                  :max="f.energy_capacity"
+                  :value="draftFor(f)"
+                  @input="onDraftInput(f, $event.target.value)"
+                />
+                <div class="energy-row">
+                  <small class="muted">
+                    Alvo: {{ draftFor(f) }} ⚡
+                    <template v-if="draftFor(f) > f.energy">
+                      · custo {{ draftFor(f) - f.energy }} do estoque
+                    </template>
+                    <template v-else-if="draftFor(f) < f.energy">
+                      · devolve {{ f.energy - draftFor(f) }} ao estoque
+                    </template>
+                    · estoque {{ energyPool }} ⚡
+                  </small>
+                  <button
+                    class="mini"
+                    :disabled="draftFor(f) === f.energy || refuelingId === f.id"
+                    @click="applyRefuel(f)"
+                  >
+                    {{ refuelingId === f.id ? '...' : 'Aplicar' }}
+                  </button>
+                </div>
+              </template>
+            </div>
           </div>
         </div>
       </div>
@@ -200,7 +303,12 @@ function close() {
 .mini { padding: .25rem .5rem; border-radius: 6px; border: 1px solid rgba(120,160,220,.3); background: #0e1420; color: #cfe0ff; cursor: pointer; font-size: .75rem; }
 .mini.danger { border-color: rgba(179,69,58,.5); color: #e08a80; }
 .fleet-meta { margin: .4rem 0 .2rem; font-size: .8rem; color: #9fb2cf; }
-.fleet-stats { margin: 0; font-size: .82rem; color: #cfe0ff; }
+.fleet-stats { margin: 0 0 .5rem; font-size: .82rem; color: #cfe0ff; }
+.energy { border-top: 1px solid rgba(120,160,220,.15); padding-top: .5rem; }
+.energy-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; font-size: .82rem; color: #ffd479; }
+.energy-head .stranded { color: #e08a80; }
+.slider { width: 100%; margin: .45rem 0 .2rem; accent-color: #ffd479; }
+.energy-row { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
 .fade-enter-active, .fade-leave-active { transition: opacity .3s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 </style>

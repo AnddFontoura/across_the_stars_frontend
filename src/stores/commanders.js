@@ -110,5 +110,26 @@ export const useCommanderStore = defineStore('commanders', {
         return false
       }
     },
+
+    /**
+     * Set a fleet's energy to an absolute amount (0..capacity). The backend
+     * reconciles the difference against the shared energy pool (filling debits
+     * it, draining refunds it).
+     */
+    async refuelFleet(fleetId, energy) {
+      this.error = null
+      try {
+        const { data } = await api.patch(`/fleets/${fleetId}/refuel`, { energy })
+        this.applyFleets(data)
+        return true
+      } catch (e) {
+        const errors = e?.response?.data?.errors
+        this.error =
+          errors?.energy?.[0] ||
+          e?.response?.data?.message ||
+          'Não foi possível reabastecer a frota.'
+        return false
+      }
+    },
   },
 })
