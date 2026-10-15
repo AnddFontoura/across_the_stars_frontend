@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Env files locais (overrides com segredos / específicos da máquina).
+# Os arquivos versionados (.env, .env.development, .env.production, .env.example)
+# NÃO devem ser ignorados.
+.env.local
+.env.*.local
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
